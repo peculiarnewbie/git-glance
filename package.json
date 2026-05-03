@@ -1,0 +1,50 @@
+{
+  "name": "git-explorer",
+  "version": "1.0.0",
+  "description": "Directory scanner with git change explorer",
+  "main": "main.js",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "dev": "concurrently -n vite,electron \"vite\" \"electron .\"",
+    "clean": "node -e \"const fs=require('fs'); for (const p of ['release','renderer-dist','dist']) { try { fs.rmSync(p,{recursive:true,force:true}); } catch (e) { console.warn('[clean] skipped', p); } }\"",
+    "build": "npm run clean && vite build",
+    "start": "electron .",
+    "pack": "npm run clean && vite build && electron-builder --win portable",
+    "dist": "npm run clean && vite build && electron-builder --win"
+  },
+  "dependencies": {
+    "solid-js": "^1.9.11"
+  },
+  "devDependencies": {
+    "@tailwindcss/vite": "^4.2.0",
+    "concurrently": "^9.1.2",
+    "electron": "^35.1.5",
+    "electron-builder": "^26.0.12",
+    "tailwindcss": "^4.2.0",
+    "vite": "^7.3.1",
+    "vite-plugin-solid": "^2.11.10",
+    "typescript": "^5.0.0"
+  },
+  "build": {
+    "appId": "dev.gitexplorer.electron",
+    "productName": "Git Explorer",
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "main.js",
+      "preload.cjs",
+      "assets/**/*",
+      "renderer-dist/**/*"
+    ],
+    "win": {
+      "target": [
+        "nsis",
+        "portable"
+      ],
+      "icon": "assets/app-icon.png"
+    }
+  },
+  "packageManager": "pnpm@10.33.2"
+}
