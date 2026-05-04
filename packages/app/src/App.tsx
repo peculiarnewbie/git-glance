@@ -87,7 +87,7 @@ export default function App() {
         cached: true,
         status: {
           branch: d.branch || "",
-          remote: null,
+          remote: d.remote || null,
           hasChanges: !!d.hasChanges,
           staged: d.staged ?? 0,
           unstaged: d.unstaged ?? 0,
@@ -170,31 +170,87 @@ export default function App() {
         : (a: RepoInfo, b: RepoInfo) => a.name.localeCompare(b.name);
 
     const errored: RepoInfo[] = [];
+    const stale: RepoInfo[] = [];
     const dirty: RepoInfo[] = [];
     const clean: RepoInfo[] = [];
 
     for (const r of all) {
       if (r.status.error) errored.push(r);
+      else if (r.status.behind > 0) stale.push(r);
       else if (r.status.hasChanges) dirty.push(r);
       else clean.push(r);
     }
 
     errored.sort(cmp);
+    stale.sort(cmp);
     dirty.sort(cmp);
     clean.sort(cmp);
 
     return {
       groups: isGrouped
-        ? { errored, dirty, clean }
-        : { errored: [], dirty: [], clean: [...all].sort(cmp) },
+        ? { errored, stale, dirty, clean }
+        : { errored: [], stale: [], dirty: [], clean: [...all].sort(cmp) },
       counts: {
         total: all.length,
+        stale: stale.length,
         dirty: dirty.length,
         clean: clean.length,
         errored: errored.length,
       },
     };
   });
+
+  function PullButton(props: { repoPath: string; repoName: string; behind: number }) {
+    const [busy, setBusy] = createSignal(false);
+    const [msg, setMsg] = createSignal<string | null>(null);
+    async function pull() {
+      if (busy()) return;
+      setBusy(true);
+      setMsg(null);
+      const result = await window.electronAPI.pullRepo(props.repoPath);
+      setMsg(result.ok ? `Pulled` : `Failed: ${result.error ?? "unknown"}`);
+      setBusy(false);
+    }
+    return (
+      <button
+        onClick={pull}
+        disabled={busy()}
+        class="flex items-center gap-1 px-2 py-1 bg-orange-500/10 hover:bg-orange-500/20 border border-orange-500/20 rounded text-[11px] text-orange-400/80 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+      >
+        <span>{busy() ? "..." : "⇣ Pull"}</span>
+        <span class="text-orange-500/50">{props.behind}</span>
+        <Show when={msg()}>
+          <span class="text-zinc-500">· {msg()}</span>
+        </Show>
+      </button>
+    );
+  }
+
+  function PushButton(props: { repoPath: string; repoName: string; ahead: number }) {
+    const [busy, setBusy] = createSignal(false);
+    const [msg, setMsg] = createSignal<string | null>(null);
+    async function push() {
+      if (busy()) return;
+      setBusy(true);
+      setMsg(null);
+      const result = await window.electronAPI.pushRepo(props.repoPath);
+      setMsg(result.ok ? `Pushed` : `Failed: ${result.error ?? "unknown"}`);
+      setBusy(false);
+    }
+    return (
+      <button
+        onClick={push}
+        disabled={busy()}
+        class="flex items-center gap-1 px-2 py-1 bg-emerald-500/10 hover:bg-emerald-500/20 border border-emerald-500/20 rounded text-[11px] text-emerald-400/80 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+      >
+        <span>{busy() ? "..." : "⇡ Push"}</span>
+        <span class="text-emerald-500/50">{props.ahead}</span>
+        <Show when={msg()}>
+          <span class="text-zinc-500">· {msg()}</span>
+        </Show>
+      </button>
+    );
+  }
 
   function RepoCard(props: { repo: RepoInfo }) {
     const repo = () => props.repo;
@@ -204,9 +260,10 @@ export default function App() {
         class="border rounded-lg overflow-hidden transition-all duration-150"
         classList={{
           "bg-zinc-900/60 border-zinc-800/60 hover:border-zinc-700/60": !isSelected(),
-          "bg-zinc-900 border-amber-500/30 ring-1 ring-amber-500/10": isSelected() && !repo().status.error && repo().status.hasChanges,
-          "bg-zinc-900 border-emerald-500/30 ring-1 ring-emerald-500/10": isSelected() && !repo().status.error && !repo().status.hasChanges,
           "bg-zinc-900 border-red-500/30 ring-1 ring-red-500/10": isSelected() && !!repo().status.error,
+          "bg-zinc-900 border-orange-500/30 ring-1 ring-orange-500/10": isSelected() && !repo().status.error && repo().status.behind > 0,
+          "bg-zinc-900 border-amber-500/30 ring-1 ring-amber-500/10": isSelected() && !repo().status.error && repo().status.behind === 0 && repo().status.hasChanges,
+          "bg-zinc-900 border-emerald-500/30 ring-1 ring-emerald-500/10": isSelected() && !repo().status.error && repo().status.behind === 0 && !repo().status.hasChanges,
           "opacity-60": repo().cached && !isSelected(),
         }}
       >
@@ -218,8 +275,9 @@ export default function App() {
             <div
               class="w-2 h-2 rounded-full shrink-0 shadow-sm"
               classList={{
-                "bg-emerald-400 shadow-emerald-400/20": !repo().status.error && !repo().status.hasChanges,
-                "bg-amber-400 shadow-amber-400/20": !repo().status.error && repo().status.hasChanges,
+                "bg-emerald-400 shadow-emerald-400/20": !repo().status.error && !repo().status.hasChanges && repo().status.behind === 0,
+                "bg-amber-400 shadow-amber-400/20": !repo().status.error && repo().status.hasChanges && repo().status.behind === 0,
+                "bg-orange-400 shadow-orange-400/20": !repo().status.error && repo().status.behind > 0,
                 "bg-red-400 shadow-red-400/20": !!repo().status.error,
               }}
             />
@@ -243,9 +301,16 @@ export default function App() {
               </Show>
               <span class="text-[11px] text-zinc-500">{repo().status.branch}</span>
               <Show when={repo().status.ahead > 0 || repo().status.behind > 0}>
-                <span class="text-[11px] text-zinc-600">
-                  {repo().status.ahead > 0 ? `+${repo().status.ahead}` : ""}
-                  {repo().status.behind > 0 ? `-${repo().status.behind}` : ""}
+                <span class="text-[11px] tabular-nums">
+                  <Show when={repo().status.ahead > 0}>
+                    <span class="text-emerald-400/80">⇡{repo().status.ahead}</span>
+                  </Show>
+                  <Show when={repo().status.ahead > 0 && repo().status.behind > 0}>
+                    <span class="text-zinc-700"> </span>
+                  </Show>
+                  <Show when={repo().status.behind > 0}>
+                    <span class="text-orange-400/80">⇣{repo().status.behind}</span>
+                  </Show>
                 </span>
               </Show>
             </Show>
@@ -287,6 +352,20 @@ export default function App() {
                   }}>{repo().status.untracked}</span>
                   <span class="text-zinc-600">untracked</span>
                 </div>
+                <Show when={repo().status.remote}>
+                  <span class="text-zinc-600">·</span>
+                  <span class="text-zinc-600 text-[10px]">{repo().status.remote}</span>
+                </Show>
+              </div>
+            </Show>
+            <Show when={repo().status.ahead > 0 || repo().status.behind > 0}>
+              <div class="flex items-center gap-2 mt-2 pt-2 border-t border-zinc-800/30">
+                <Show when={repo().status.behind > 0}>
+                  <PullButton repoPath={repo().path} repoName={repo().name} behind={repo().status.behind} />
+                </Show>
+                <Show when={repo().status.ahead > 0}>
+                  <PushButton repoPath={repo().path} repoName={repo().name} ahead={repo().status.ahead} />
+                </Show>
               </div>
             </Show>
           </div>
@@ -399,6 +478,11 @@ export default function App() {
               <span class="text-zinc-400 tabular-nums">{listData().counts.dirty}</span>
               <span class="text-zinc-600">dirty</span>
             </div>
+            <div class="flex items-center gap-1.5 text-[11px]">
+              <span class="inline-block w-1.5 h-1.5 rounded-full bg-orange-400/60" />
+              <span class="text-zinc-400 tabular-nums">{listData().counts.stale}</span>
+              <span class="text-zinc-600">stale</span>
+            </div>
             <Show when={listData().counts.errored > 0}>
               <div class="flex items-center gap-1.5 text-[11px]">
                 <span class="inline-block w-1.5 h-1.5 rounded-full bg-red-400/60" />
@@ -447,6 +531,9 @@ export default function App() {
           >
             <Show when={listData().counts.errored > 0}>
               <Section title="Errors" icon="!" repos={listData().groups.errored} />
+            </Show>
+            <Show when={listData().counts.stale > 0}>
+              <Section title="Behind Remote" icon="⇣" repos={listData().groups.stale} />
             </Show>
             <Show when={listData().counts.dirty > 0}>
               <Section title="Uncommitted" icon="~" repos={listData().groups.dirty} />

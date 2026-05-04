@@ -38,6 +38,8 @@ function App() {
   const [scanProgress, setScanProgress] = createSignal({ current: 0, total: 0 })
   const [error, setError] = createSignal<string | null>(null)
   const [statusMsg, setStatusMsg] = createSignal("Press [s] to start scan")
+  const [staleOnly, setStaleOnly] = createSignal(false)
+  const [busy, setBusy] = createSignal(false)
 
   let abortController: AbortController | null = null
 
@@ -72,8 +74,14 @@ function App() {
       setSelectedIdx((i) => Math.max(0, i - 1))
     }
     if (key.name === "down" || key.name === "j") {
-      setSelectedIdx((i) => Math.min(repos().length - 1, i + 1))
+      setSelectedIdx((i) => Math.min(filteredRepos().length - 1, i + 1))
     }
+    if (key.name === "t") {
+      setStaleOnly((v) => !v)
+      setSelectedIdx(0)
+    }
+    if (key.name === "p") pullRepo()
+    if (key.name === "u") pushRepo()
   })
 
   // ── Scan ──
@@ -144,7 +152,57 @@ function App() {
     setScanning(false)
   }
 
+  // ── Pull / Push ──
+  async function pullRepo() {
+    const repo = selectedRepo()
+    if (!repo || busy()) return
+    setBusy(true)
+    setStatusMsg(`Pulling ${repo.name}...`)
+    try {
+      const res = await fetch(`${SERVER_HOST}/pull?repo=${encodeURIComponent(repo.path)}`, { method: "POST" })
+      const data = (await res.json()) as { ok: boolean; error?: string }
+      if (data.ok) {
+        setStatusMsg(`Pulled ${repo.name} successfully`)
+        await fetchRepos().then(setRepos)
+      } else {
+        setStatusMsg(`Pull failed: ${data.error ?? "unknown"}`)
+      }
+    } catch (e) {
+      setStatusMsg(`Pull error: ${(e as Error).message}`)
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  async function pushRepo() {
+    const repo = selectedRepo()
+    if (!repo || busy()) return
+    setBusy(true)
+    setStatusMsg(`Pushing ${repo.name}...`)
+    try {
+      const res = await fetch(`${SERVER_HOST}/push?repo=${encodeURIComponent(repo.path)}`, { method: "POST" })
+      const data = (await res.json()) as { ok: boolean; error?: string }
+      if (data.ok) {
+        setStatusMsg(`Pushed ${repo.name} successfully`)
+        await fetchRepos().then(setRepos)
+      } else {
+        setStatusMsg(`Push failed: ${data.error ?? "unknown"}`)
+      }
+    } catch (e) {
+      setStatusMsg(`Push error: ${(e as Error).message}`)
+    } finally {
+      setBusy(false)
+    }
+  }
+
   const selectedRepo = createMemo(() => repos()[selectedIdx()])
+
+  const filteredRepos = createMemo(() => {
+    if (staleOnly()) return repos().filter((r) => r.behind > 0)
+    return repos()
+  })
+
+  const staleCount = createMemo(() => repos().filter((r) => r.behind > 0).length)
 
   return (
     <box
@@ -159,7 +217,7 @@ function App() {
         <text bold bg="#0055AA">
           {scanning()
             ? ` Scanning ${scanProgress().current}/${scanProgress().total}`
-            : " Git Glance"}
+            : ` Git Glance · ${repos().length} repos · ${repos().filter((r) => r.hasChanges).length} dirty · ${staleCount()} stale`}
         </text>
       </box>
 
@@ -170,7 +228,7 @@ function App() {
           title=" Repositories "
           style={{ width: "50%" }}
         >
-          <For each={repos()}>
+          <For each={filteredRepos()}>
             {(repo, i) => {
               const selected = i() === selectedIdx()
               return (
@@ -189,14 +247,23 @@ function App() {
                     {repo.name}{" "}
                   </text>
                   <text fg={selected ? "#AADDFF" : "#666666"}>
-                    {repo.branch ? `(${repo.branch})` : ""} {timeAgo(repo.lastCommitTime)}
+                    {repo.branch ? `(${repo.branch})` : ""}{" "}
+                  </text>
+                  <text fg={repo.behind > 0 ? "#FFAA00" : "#888888"}>
+                    {repo.ahead > 0 ? `⇡${repo.ahead}` : ""}
+                    {repo.behind > 0 ? ` ⇣${repo.behind}` : ""}
+                  </text>
+                  <text fg={selected ? "#AADDFF" : "#666666"}>
+                    {" "}{timeAgo(repo.lastCommitTime)}
                   </text>
                 </text>
               )
             }}
           </For>
-          <Show when={repos().length === 0 && !error()}>
-            <text fg="#666666"> No repos loaded. Press [s] to scan.</text>
+          <Show when={filteredRepos().length === 0 && !error()}>
+            <text fg="#666666">
+              {repos().length > 0 ? " No stale repos. Press [t] to show all." : " No repos loaded. Press [s] to scan."}
+            </text>
           </Show>
           <Show when={error()}>
             <text fg="#FF4444"> {error()}</text>
@@ -221,6 +288,9 @@ function App() {
                   <text fg="#888888"> {r.path}</text>
                   <text> </text>
                   <text>Branch: <text fg="#88CCFF">{r.branch ?? "N/A"}</text></text>
+                  <Show when={r.remote}>
+                    <text>Remote: <text fg="#888888">{r.remote}</text></text>
+                  </Show>
                   <text>
                     Status:{" "}
                     {r.error
@@ -236,8 +306,8 @@ function App() {
                   <text>  Untracked: {r.untracked}</text>
                   <Show when={r.ahead > 0 || r.behind > 0}>
                     <text>
-                      Remote: {r.ahead > 0 ? <text fg="#44CC44">+{r.ahead} </text> : ""}
-                      {r.behind > 0 ? <text fg="#FFAA00">-{r.behind}</text> : ""}
+                      Remote: {r.ahead > 0 ? <text fg="#44CC44">⇡{r.ahead} ahead </text> : ""}
+                      {r.behind > 0 ? <text fg="#FFAA00">⇣{r.behind} behind</text> : ""}
                     </text>
                   </Show>
                   <text> </text>
@@ -253,10 +323,8 @@ function App() {
       {/* Status bar */}
       <box height={1}>
         <text bg="#333333">
-          {" "}
-          {statusMsg()}{"  "}
           <text fg="#888888">
-            [s]scan [r]refresh [j/k]nav [c]cancel [q]quit
+            [s]scan [r]refresh [j/k]nav <text fg={staleOnly() ? "#FFAA00" : "#888888"}>[t]stale</text> [p]pull [u]push [c]cancel [q]quit
           </text>
         </text>
       </box>

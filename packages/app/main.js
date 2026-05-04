@@ -147,6 +147,26 @@ ipcMain.handle("save-dir", (_, dir) => {
 
 let cancelScan = false;
 
+// ── Pull / Push ───────────────────────────────────────────────────
+
+ipcMain.handle("pull-repo", async (_, repoPath) => {
+  try {
+    const output = execSync(`git pull`, { cwd: repoPath, timeout: 30000, encoding: "utf-8" });
+    return { ok: true, output: output.trim() };
+  } catch (err) {
+    return { ok: false, error: err.message || String(err) };
+  }
+});
+
+ipcMain.handle("push-repo", async (_, repoPath) => {
+  try {
+    const output = execSync(`git push`, { cwd: repoPath, timeout: 30000, encoding: "utf-8" });
+    return { ok: true, output: output.trim() };
+  } catch (err) {
+    return { ok: false, error: err.message || String(err) };
+  }
+});
+
 ipcMain.on("cancel-scan", () => {
   cancelScan = true;
 });
@@ -187,6 +207,7 @@ ipcMain.on("start-scan", async (event, dirPath) => {
         untracked: status.untracked ?? 0,
         ahead: status.ahead ?? 0,
         behind: status.behind ?? 0,
+        remote: status.remote || null,
         lastCommitTime: status.lastCommitTime,
         weekCommits: status.weekCommits ?? 0,
         lastScanTime: Date.now(),

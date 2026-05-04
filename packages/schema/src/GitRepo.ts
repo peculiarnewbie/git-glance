@@ -16,6 +16,7 @@ export class GitRepo extends Schema.Class<GitRepo>("GitRepo")({
   untracked: Schema.Number.pipe(Schema.check(Schema.isGreaterThanOrEqualTo(0))),
   ahead: Schema.Number.pipe(Schema.check(Schema.isGreaterThanOrEqualTo(0))),
   behind: Schema.Number.pipe(Schema.check(Schema.isGreaterThanOrEqualTo(0))),
+  remote: Schema.NullOr(Schema.String),
   lastCommitTime: Schema.NullOr(Schema.Number),
   weekCommits: Schema.Number.pipe(Schema.check(Schema.isGreaterThanOrEqualTo(0))),
   lastScanTime: Schema.NullOr(Schema.Number),

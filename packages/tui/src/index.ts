@@ -66,11 +66,15 @@ function timeAgo(ts: number | null): string {
 interface AppState {
   repos: Array<GitRepo>
   selectedIndex: number
+  staleOnly: boolean
+  busy: boolean
 }
 
 const state: AppState = {
   repos: [],
   selectedIndex: 0,
+  staleOnly: false,
+  busy: false,
 }
 
 // TUI component refs
@@ -153,7 +157,7 @@ async function buildUI() {
 
   // ── Status bar ──
   statusText = new TextRenderable(renderer, {
-    content: " [s]scan [r]refresh [j/k]nav [q]quit",
+    content: " [s]scan [r]refresh [j/k]nav [t]stale [p]pull [u]push [q]quit",
     backgroundColor: "#333333",
     color: "#AAAAAA",
     height: 1,
@@ -164,19 +168,25 @@ async function buildUI() {
 // ─── Update display ────────────────────────────────────────────────
 
 function updateAll() {
-  const { repos, selectedIndex } = state
+  const { repos, selectedIndex, staleOnly } = state
+
+  const visible = staleOnly ? repos.filter((r) => r.behind > 0) : repos
 
   // Repo list items
   for (let i = 0; i < MAX_VISIBLE; i++) {
-    if (i < repos.length) {
-      const repo = repos[i]
+    if (i < visible.length) {
+      const repo = visible[i]
       const selected = i === selectedIndex
       const prefix = repo.error ? "!" : repo.hasChanges ? "~" : "·"
       const arrow = selected ? "▸" : " "
-      // Format: arrow prefix name branch time
       const branchStr = repo.branch ? ` (${repo.branch})` : ""
       const timeStr = timeAgo(repo.lastCommitTime)
-      const line = ` ${arrow} ${prefix} ${repo.name}${branchStr} ${timeStr}`
+      const remoteStr =
+        repo.ahead > 0 && repo.behind > 0 ? ` ⇡${repo.ahead} ⇣${repo.behind}`
+        : repo.ahead > 0 ? ` ⇡${repo.ahead}`
+        : repo.behind > 0 ? ` ⇣${repo.behind}`
+        : ""
+      const line = ` ${arrow} ${prefix} ${repo.name}${branchStr}${remoteStr} ${timeStr}`
       listItems[i].content = line
       listItems[i].color = selected ? "#FFFFFF" : "#CCCCCC"
       listItems[i].backgroundColor = selected ? "#0055AA" : undefined
@@ -188,7 +198,7 @@ function updateAll() {
   }
 
   // Detail pane
-  const repo = repos[selectedIndex]
+  const repo = visible[selectedIndex]
   if (repo) {
     const statusLabel = repo.error
       ? `Error: ${repo.error}`
@@ -197,13 +207,16 @@ function updateAll() {
         : "Clean"
     const remoteStr =
       repo.ahead > 0 || repo.behind > 0
-        ? `\n Remote: ${repo.ahead > 0 ? `+${repo.ahead} ` : ""}${repo.behind > 0 ? `-${repo.behind}` : ""}`
+        ? `\n Remote: ${repo.ahead > 0 ? `⇡${repo.ahead} ahead ` : ""}${repo.behind > 0 ? `⇣${repo.behind} behind` : ""}`
         : ""
+    const remoteBranchStr = repo.remote ? `\n Upstream: ${repo.remote}` : ""
     detailText.content =
       ` ${repo.name}\n` +
       ` ${repo.path}\n` +
       `\n` +
-      ` Branch: ${repo.branch ?? "N/A"}\n` +
+      ` Branch: ${repo.branch ?? "N/A"}` +
+      remoteBranchStr +
+      `\n` +
       ` Status: ${statusLabel}\n` +
       `\n` +
       ` Changes:\n` +
@@ -223,10 +236,11 @@ function updateAll() {
 
   // Header
   const dirty = repos.filter((r) => r.hasChanges).length
-  header.content = ` ${repos.length} repos · ${dirty} dirty · ${repos.length - dirty} clean`
+  const stale = repos.filter((r) => r.behind > 0).length
+  header.content = ` ${repos.length} repos · ${dirty} dirty · ${stale} stale · ${repos.length - dirty} clean`
 
   // Title row showing list vs detail
-  const listTitleText = ` Repositories (${repos.length})`
+  const listTitleText = state.staleOnly ? ` Stale (${visible.length})` : ` Repositories (${visible.length})`
   titleRow.content = ` ${listTitleText.padEnd(40)}${repo ? repo.name : ""}`
 }
 
@@ -251,6 +265,54 @@ async function startScan() {
 
   await buildUI()
   updateAll()
+}
+
+// ─── Pull / Push ──────────────────────────────────────────────────────────
+
+async function pullRepo() {
+  if (state.busy) return
+  const visible = state.staleOnly ? state.repos.filter((r) => r.behind > 0) : state.repos
+  const repo = visible[state.selectedIndex]
+  if (!repo) return
+  state.busy = true
+  try {
+    const res = await fetch(`${SERVER_HOST}/pull?repo=${encodeURIComponent(repo.path)}`, { method: "POST" })
+    const data = (await res.json()) as { ok: boolean; error?: string }
+    if (data.ok) {
+      statusText.content = ` Pulled ${repo.name} successfully`
+    } else {
+      statusText.content = ` Pull failed: ${data.error ?? "unknown"}`
+    }
+    state.repos = await fetchRepos()
+  } catch (e) {
+    statusText.content = ` Pull error: ${(e as Error).message}`
+  } finally {
+    state.busy = false
+    updateAll()
+  }
+}
+
+async function pushRepo() {
+  if (state.busy) return
+  const visible = state.staleOnly ? state.repos.filter((r) => r.behind > 0) : state.repos
+  const repo = visible[state.selectedIndex]
+  if (!repo) return
+  state.busy = true
+  try {
+    const res = await fetch(`${SERVER_HOST}/push?repo=${encodeURIComponent(repo.path)}`, { method: "POST" })
+    const data = (await res.json()) as { ok: boolean; error?: string }
+    if (data.ok) {
+      statusText.content = ` Pushed ${repo.name} successfully`
+    } else {
+      statusText.content = ` Push failed: ${data.error ?? "unknown"}`
+    }
+    state.repos = await fetchRepos()
+  } catch (e) {
+    statusText.content = ` Push error: ${(e as Error).message}`
+  } finally {
+    state.busy = false
+    updateAll()
+  }
 }
 
 // ─── Main entry ────────────────────────────────────────────────────
@@ -291,9 +353,17 @@ async function main() {
       updateAll()
     }
     if (key.name === "down" || key.name === "j") {
-      state.selectedIndex = Math.min(state.repos.length - 1, state.selectedIndex + 1)
+      const visible = state.staleOnly ? state.repos.filter((r) => r.behind > 0) : state.repos
+      state.selectedIndex = Math.min(visible.length - 1, state.selectedIndex + 1)
       updateAll()
     }
+    if (key.name === "t") {
+      state.staleOnly = !state.staleOnly
+      state.selectedIndex = 0
+      updateAll()
+    }
+    if (key.name === "p") pullRepo()
+    if (key.name === "u") pushRepo()
   })
 }
 

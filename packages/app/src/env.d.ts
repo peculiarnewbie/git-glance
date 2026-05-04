@@ -5,6 +5,8 @@ interface ElectronAPI {
   saveDir: (dir: string) => Promise<void>;
   startScan: (dirPath: string) => void;
   cancelScan: () => void;
+  pullRepo: (repoPath: string) => Promise<{ ok: boolean; output?: string; error?: string }>;
+  pushRepo: (repoPath: string) => Promise<{ ok: boolean; output?: string; error?: string }>;
   onScanProgress: (callback: (data: any) => void) => () => void;
 }
 

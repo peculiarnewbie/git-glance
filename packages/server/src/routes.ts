@@ -41,7 +41,57 @@ export const AppLayer = HttpRouter.use(
         }),
       )
 
-      // ── GET /scan?rootDir=<path> — scan & stream progress as SSE ──
+      // ── POST /pull?repo=<path> — git pull ─────────────────────────
+      yield* router.add(
+        "POST",
+        "/pull",
+        (req: HttpServerRequest.HttpServerRequest) =>
+          Effect.gen(function* () {
+            const url = new URL(req.url, "http://localhost")
+            const repo = url.searchParams.get("repo")
+            if (!repo) {
+              return yield* HttpServerResponse.json(
+                { ok: false, error: 'Missing "repo" parameter' },
+                { status: 400 },
+              )
+            }
+
+            const run = gitService.run("pull", repo, { timeout: 30_000 }).pipe(
+              Effect.map((output) => ({ ok: true as const, output })),
+              Effect.catch((e) =>
+                Effect.succeed({ ok: false as const, error: String((e as { cause?: string }).cause ?? e) }),
+              ),
+            )
+            const result = yield* run
+            return yield* HttpServerResponse.json(result, result.ok ? {} : { status: 500 })
+          }),
+      )
+
+      // ── POST /push?repo=<path> — git push ─────────────────────────
+      yield* router.add(
+        "POST",
+        "/push",
+        (req: HttpServerRequest.HttpServerRequest) =>
+          Effect.gen(function* () {
+            const url = new URL(req.url, "http://localhost")
+            const repo = url.searchParams.get("repo")
+            if (!repo) {
+              return yield* HttpServerResponse.json(
+                { ok: false, error: 'Missing "repo" parameter' },
+                { status: 400 },
+              )
+            }
+
+            const run = gitService.run("push", repo, { timeout: 30_000 }).pipe(
+              Effect.map((output) => ({ ok: true as const, output })),
+              Effect.catch((e) =>
+                Effect.succeed({ ok: false as const, error: String((e as { cause?: string }).cause ?? e) }),
+              ),
+            )
+            const result = yield* run
+            return yield* HttpServerResponse.json(result, result.ok ? {} : { status: 500 })
+          }),
+      )
       yield* router.add(
         "GET",
         "/scan",

@@ -7,6 +7,8 @@ contextBridge.exposeInMainWorld("electronAPI", {
   saveDir: (dir) => ipcRenderer.invoke("save-dir", dir),
   startScan: (dirPath) => ipcRenderer.send("start-scan", dirPath),
   cancelScan: () => ipcRenderer.send("cancel-scan"),
+  pullRepo: (repoPath) => ipcRenderer.invoke("pull-repo", repoPath),
+  pushRepo: (repoPath) => ipcRenderer.invoke("push-repo", repoPath),
   onScanProgress: (callback) => {
     const handler = (_event, data) => callback(data);
     ipcRenderer.on("scan-progress", handler);
