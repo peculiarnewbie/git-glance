@@ -145,7 +145,6 @@ function App() {
   }
 
   const selectedRepo = createMemo(() => repos()[selectedIdx()])
-  const listWidth = () => Math.floor(dims().width / 2) - 1
 
   return (
     <box
@@ -166,24 +165,30 @@ function App() {
 
       {/* Main content area */}
       <box style={{ flexDirection: "row", height: dims().height - 3 }}>
-        {/* Left: repo list */}
+        {/* Left: repo list — 50% width */}
         <scrollbox
           title=" Repositories "
-          style={{ width: listWidth() }}
+          style={{ width: "50%" }}
         >
           <For each={repos()}>
             {(repo, i) => {
               const selected = i() === selectedIdx()
               return (
                 <text
-                  bg={selected ? "#00AAFF" : undefined}
+                  bg={selected ? "#0055AA" : undefined}
                   height={1}
                 >
-                  <text fg={repo.error ? "#FF4444" : repo.hasChanges ? "#FFAA00" : "#44CC44"}>
+                  <text
+                    fg={selected ? "#FFFFFF" : repo.error ? "#FF4444" : repo.hasChanges ? "#FFAA00" : "#44CC44"}
+                    bold={selected}
+                  >
+                    {selected ? "▸" : " "}{" "}
                     {repo.error ? "!" : repo.hasChanges ? "~" : "·"}
                   </text>{" "}
-                  {repo.name}{" "}
-                  <text fg="#666666">
+                  <text fg={selected ? "#FFFFFF" : undefined} bold={selected}>
+                    {repo.name}{" "}
+                  </text>
+                  <text fg={selected ? "#AADDFF" : "#666666"}>
                     {repo.branch ? `(${repo.branch})` : ""} {timeAgo(repo.lastCommitTime)}
                   </text>
                 </text>
@@ -198,12 +203,13 @@ function App() {
           </Show>
         </scrollbox>
 
-        {/* Right: detail pane */}
+        {/* Right: detail pane — fills remaining 50% */}
         <box
           title=" Details "
           style={{
             flexDirection: "column",
-            padding: { left: 1 },
+            padding: { left: 1, right: 1 },
+            width: "50%",
           }}
         >
           <Show when={selectedRepo()} fallback={<text fg="#666666"> No repo selected</text>}>
@@ -211,7 +217,7 @@ function App() {
               const r = repo()
               return (
                 <>
-                  <text bold>{r.name}</text>
+                  <text bold fg="#88CCFF">▸ {r.name}</text>
                   <text fg="#888888"> {r.path}</text>
                   <text> </text>
                   <text>Branch: <text fg="#88CCFF">{r.branch ?? "N/A"}</text></text>

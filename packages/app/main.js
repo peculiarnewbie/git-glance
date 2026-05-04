@@ -48,12 +48,15 @@ function saveSavedDir(dir) {
 }
 
 async function isViteDevRunning() {
-  try {
-    await fetch(VITE_DEV_URL, { method: "HEAD", signal: AbortSignal.timeout(1000) });
-    return true;
-  } catch {
-    return false;
+  for (let i = 0; i < 10; i++) {
+    try {
+      await fetch(VITE_DEV_URL, { method: "HEAD", signal: AbortSignal.timeout(1000) });
+      return true;
+    } catch {
+      await new Promise(r => setTimeout(r, 500));
+    }
   }
+  return false;
 }
 
 function findGitRepos(rootDir) {

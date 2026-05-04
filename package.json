@@ -3,23 +3,19 @@
   "private": true,
   "scripts": {
     "build": "pnpm -r build",
+    "dev": "concurrently \"pnpm --filter @git-glance/server dev\" \"pnpm --filter @git-glance/app dev\"",
     "dev:server": "pnpm --filter @git-glance/server dev",
     "dev:tui": "pnpm --filter @git-glance/tui dev",
-    "dev": "concurrently \"vite\" \"electron .\""
+    "dev:app": "pnpm --filter @git-glance/app dev"
+  },
+  "devDependencies": {
+    "concurrently": "^9.2.1"
   },
   "packageManager": "pnpm@10.33.2",
-  "devDependencies": {
-    "concurrently": "^9.2.1",
-    "electron": "^41.5.0",
-    "vite": "^8.0.10"
-  },
   "pnpm": {
     "onlyBuiltDependencies": [
       "electron",
       "esbuild"
     ]
-  },
-  "dependencies": {
-    "@opentui/core-linux-x64": "0.2.2"
   }
 }
