@@ -208,6 +208,27 @@ export default function App() {
       setBusy(true);
       setMsg(null);
       const result = await window.electronAPI.pullRepo(props.repoPath);
+      if (result.ok) {
+        const cache = await window.electronAPI.getCache();
+        setRepos(Object.entries(cache.repos || {}).map(([p, d]: [string, any]) => ({
+          path: p,
+          name: d.name,
+          cached: false,
+          status: {
+            branch: d.branch || "",
+            remote: d.remote || null,
+            hasChanges: !!d.hasChanges,
+            staged: d.staged ?? 0,
+            unstaged: d.unstaged ?? 0,
+            untracked: d.untracked ?? 0,
+            ahead: d.ahead ?? 0,
+            behind: d.behind ?? 0,
+            lastCommitTime: d.lastCommitTime ?? null,
+            weekCommits: d.weekCommits ?? 0,
+            error: d.error || undefined,
+          },
+        })));
+      }
       setMsg(result.ok ? `Pulled` : `Failed: ${result.error ?? "unknown"}`);
       setBusy(false);
     }
@@ -234,6 +255,27 @@ export default function App() {
       setBusy(true);
       setMsg(null);
       const result = await window.electronAPI.pushRepo(props.repoPath);
+      if (result.ok) {
+        const cache = await window.electronAPI.getCache();
+        setRepos(Object.entries(cache.repos || {}).map(([p, d]: [string, any]) => ({
+          path: p,
+          name: d.name,
+          cached: false,
+          status: {
+            branch: d.branch || "",
+            remote: d.remote || null,
+            hasChanges: !!d.hasChanges,
+            staged: d.staged ?? 0,
+            unstaged: d.unstaged ?? 0,
+            untracked: d.untracked ?? 0,
+            ahead: d.ahead ?? 0,
+            behind: d.behind ?? 0,
+            lastCommitTime: d.lastCommitTime ?? null,
+            weekCommits: d.weekCommits ?? 0,
+            error: d.error || undefined,
+          },
+        })));
+      }
       setMsg(result.ok ? `Pushed` : `Failed: ${result.error ?? "unknown"}`);
       setBusy(false);
     }

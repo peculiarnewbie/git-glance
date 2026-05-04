@@ -150,21 +150,65 @@ let cancelScan = false;
 // ── Pull / Push ───────────────────────────────────────────────────
 
 ipcMain.handle("pull-repo", async (_, repoPath) => {
+  let output;
   try {
-    const output = execSync(`git pull`, { cwd: repoPath, timeout: 30000, encoding: "utf-8" });
-    return { ok: true, output: output.trim() };
+    output = execSync(`git pull`, { cwd: repoPath, timeout: 30000, encoding: "utf-8" }).trim();
   } catch (err) {
     return { ok: false, error: err.message || String(err) };
   }
+
+  // Rescan repo after successful pull and update cache
+  const status = await getGitStatusAsync(repoPath);
+  const cache = loadCache();
+  cache.repos[repoPath] = {
+    name: path.basename(repoPath),
+    branch: status.branch || null,
+    hasChanges: !!status.hasChanges,
+    staged: status.staged ?? 0,
+    unstaged: status.unstaged ?? 0,
+    untracked: status.untracked ?? 0,
+    ahead: status.ahead ?? 0,
+    behind: status.behind ?? 0,
+    remote: status.remote || null,
+    lastCommitTime: status.lastCommitTime,
+    weekCommits: status.weekCommits ?? 0,
+    lastScanTime: Date.now(),
+    error: status.error || null,
+  };
+  saveCache(cache);
+
+  return { ok: true, output };
 });
 
 ipcMain.handle("push-repo", async (_, repoPath) => {
+  let output;
   try {
-    const output = execSync(`git push`, { cwd: repoPath, timeout: 30000, encoding: "utf-8" });
-    return { ok: true, output: output.trim() };
+    output = execSync(`git push`, { cwd: repoPath, timeout: 30000, encoding: "utf-8" }).trim();
   } catch (err) {
     return { ok: false, error: err.message || String(err) };
   }
+
+  // Rescan repo after successful push and update cache
+  const status = await getGitStatusAsync(repoPath);
+  const cache = loadCache();
+  cache.repos[repoPath] = {
+    name: path.basename(repoPath),
+    branch: status.branch || null,
+    hasChanges: !!status.hasChanges,
+    staged: status.staged ?? 0,
+    unstaged: status.unstaged ?? 0,
+    untracked: status.untracked ?? 0,
+    ahead: status.ahead ?? 0,
+    behind: status.behind ?? 0,
+    remote: status.remote || null,
+    lastCommitTime: status.lastCommitTime,
+    weekCommits: status.weekCommits ?? 0,
+    lastScanTime: Date.now(),
+    error: status.error || null,
+  };
+  saveCache(cache);
+
+  return { ok: true, output };
 });
 
 ipcMain.on("cancel-scan", () => {

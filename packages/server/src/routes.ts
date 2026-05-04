@@ -1,6 +1,6 @@
 import { Effect, Layer, Stream } from "effect"
 import { HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/unstable/http"
-import { ScanProgress } from "@git-glance/schema"
+import { ScanProgress, GitRepo } from "@git-glance/schema"
 import { ScannerService, ScannerServiceLive } from "./services/ScannerService.js"
 import { GitService, GitServiceLive } from "./services/GitService.js"
 import { CacheService, CacheServiceLive } from "./services/CacheService.js"
@@ -11,7 +11,7 @@ import { CacheService, CacheServiceLive } from "./services/CacheService.js"
 
 const defaultCachePath = join(homedir(), ".git-glance", "repo-cache.json")
 import { homedir } from "node:os"
-import { join } from "node:path"
+import { join, basename } from "node:path"
 
 const cacheService = CacheServiceLive({ cachePath: join(homedir(), ".git-glance", "repo-cache.json") })
 
@@ -63,6 +63,37 @@ export const AppLayer = HttpRouter.use(
               ),
             )
             const result = yield* run
+
+            if (result.ok) {
+              const status = yield* gitService.getStatus(repo).pipe(
+                Effect.catch(() => Effect.succeed(null)),
+              )
+              if (status) {
+                const repos = [...(yield* cacheService.load())]
+                const idx = repos.findIndex((r) => r.path === repo)
+                const updated = new GitRepo({
+                  name: basename(repo),
+                  path: repo,
+                  branch: status.branch || null,
+                  hasChanges: status.hasChanges,
+                  staged: status.staged,
+                  unstaged: status.unstaged,
+                  untracked: status.untracked,
+                  ahead: status.ahead,
+                  behind: status.behind,
+                  remote: status.remote ?? null,
+                  lastCommitTime: status.lastCommitTime,
+                  weekCommits: status.weekCommits,
+                  lastScanTime: Date.now(),
+                  error: null,
+                })
+                if (idx >= 0) {
+                  repos.splice(idx, 1, updated as unknown as typeof repos[number])
+                }
+                yield* cacheService.save(repos)
+              }
+            }
+
             return yield* HttpServerResponse.json(result, result.ok ? {} : { status: 500 })
           }),
       )
@@ -89,6 +120,37 @@ export const AppLayer = HttpRouter.use(
               ),
             )
             const result = yield* run
+
+            if (result.ok) {
+              const status = yield* gitService.getStatus(repo).pipe(
+                Effect.catch(() => Effect.succeed(null)),
+              )
+              if (status) {
+                const repos = [...(yield* cacheService.load())]
+                const idx = repos.findIndex((r) => r.path === repo)
+                const updated = new GitRepo({
+                  name: basename(repo),
+                  path: repo,
+                  branch: status.branch || null,
+                  hasChanges: status.hasChanges,
+                  staged: status.staged,
+                  unstaged: status.unstaged,
+                  untracked: status.untracked,
+                  ahead: status.ahead,
+                  behind: status.behind,
+                  remote: status.remote ?? null,
+                  lastCommitTime: status.lastCommitTime,
+                  weekCommits: status.weekCommits,
+                  lastScanTime: Date.now(),
+                  error: null,
+                })
+                if (idx >= 0) {
+                  repos.splice(idx, 1, updated as unknown as typeof repos[number])
+                }
+                yield* cacheService.save(repos)
+              }
+            }
+
             return yield* HttpServerResponse.json(result, result.ok ? {} : { status: 500 })
           }),
       )
