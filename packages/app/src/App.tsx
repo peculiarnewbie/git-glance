@@ -435,7 +435,7 @@ export default function App() {
           <span class="text-[11px] text-zinc-700">{props.repos.length}</span>
         </button>
         <Show when={!isCollapsed()}>
-          <div class="space-y-1">
+          <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-2">
             <For each={props.repos}>{(repo) => <RepoCard repo={repo} />}</For>
           </div>
         </Show>
@@ -445,7 +445,7 @@ export default function App() {
 
   return (
     <div class="min-h-screen bg-[#09090b] text-zinc-300">
-      <div class="max-w-3xl mx-auto px-5 py-6">
+      <div class="w-full px-6 py-6">
         <div class="flex items-center justify-between mb-5">
           <div>
             <h1 class="text-sm font-semibold text-zinc-100 tracking-tight">Git Explorer</h1>
@@ -566,7 +566,7 @@ export default function App() {
           <Show
             when={grouped()}
             fallback={
-              <div class="space-y-1">
+              <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-2">
                 <For each={listData().groups.clean}>{(repo) => <RepoCard repo={repo} />}</For>
               </div>
             }
