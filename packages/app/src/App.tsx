@@ -23,6 +23,7 @@ interface RepoInfo {
   status: GitStatus;
   skipUntracked?: boolean;
   skipPullCheck?: boolean;
+  hidden?: boolean;
 }
 
 function timeAgo(ts: number): string {
@@ -46,6 +47,7 @@ function cacheEntryToRepoInfo([p, d]: [string, any], cached = false): RepoInfo {
     cached,
     skipUntracked: d.skipUntracked === true,
     skipPullCheck: d.skipPullCheck === true,
+    hidden: d.hidden === true,
     status: {
       branch: d.branch || "",
       remote: d.remote || null,
@@ -70,7 +72,7 @@ export default function App() {
   const [selectedRepo, setSelectedRepo] = createSignal<string | null>(null);
   const [sortKey, setSortKey] = createSignal<SortKey>("last-commit");
   const [grouped, setGrouped] = createSignal(true);
-  const [collapsed, setCollapsed] = createSignal<Set<string>>(new Set());
+  const [collapsed, setCollapsed] = createSignal<Set<string>>(new Set(["Hidden"]));
   const [loading, setLoading] = createSignal(true);
   const [config, setConfig] = createSignal<{ opencodeModel: string }>({ opencodeModel: "CrofAI/deepseek-v4-flash" });
   const [showSettings, setShowSettings] = createSignal(false);
@@ -122,8 +124,8 @@ export default function App() {
         setCommitBusy(null);
         setCommitPhase("");
       } else if (data.phase === "done") {
-        window.electronAPI.getCache().then((cache) => {
-          setRepos(Object.entries(cache.repos || {}).map(cacheEntryToRepoInfo));
+          window.electronAPI.getCache().then((cache) => {
+          setRepos(Object.entries(cache.repos || {}).map((e) => cacheEntryToRepoInfo(e)));
         });
         setCommitBusy(null);
         setCommitPhase("");
@@ -234,7 +236,7 @@ export default function App() {
     setScanning(false);
   }
 
-  async function updateRepoSettings(repoPath: string, settings: { skipUntracked?: boolean; skipPullCheck?: boolean }) {
+  async function updateRepoSettings(repoPath: string, settings: { skipUntracked?: boolean; skipPullCheck?: boolean; hidden?: boolean }) {
     await window.electronAPI.updateRepoSettings(repoPath, settings);
     setRepos(prev => {
       const next = prev.slice();
@@ -262,18 +264,21 @@ export default function App() {
           ? (a: RepoInfo, b: RepoInfo) => (b.status.behind ?? 0) - (a.status.behind ?? 0)
           : (a: RepoInfo, b: RepoInfo) => a.name.localeCompare(b.name);
 
+    const hidden: RepoInfo[] = [];
     const errored: RepoInfo[] = [];
     const stale: RepoInfo[] = [];
     const dirty: RepoInfo[] = [];
     const clean: RepoInfo[] = [];
 
     for (const r of all) {
-      if (r.status.error) errored.push(r);
+      if (r.hidden) hidden.push(r);
+      else if (r.status.error) errored.push(r);
       else if (r.status.behind > 0) stale.push(r);
       else if (r.status.hasChanges) dirty.push(r);
       else clean.push(r);
     }
 
+    hidden.sort(cmp);
     errored.sort(cmp);
     stale.sort(cmp);
     dirty.sort(cmp);
@@ -281,10 +286,11 @@ export default function App() {
 
     return {
       groups: isGrouped
-        ? { errored, stale, dirty, clean }
-        : { errored: [], stale: [], dirty: [], clean: [...all].sort(cmp) },
+        ? { hidden, errored, stale, dirty, clean }
+        : { hidden, errored: [], stale: [], dirty: [], clean: [...all.filter(r => !r.hidden)].sort(cmp) },
       counts: {
         total: all.length,
+        hidden: hidden.length,
         stale: stale.length,
         dirty: dirty.length,
         clean: clean.length,
@@ -303,7 +309,7 @@ export default function App() {
       const result = await window.electronAPI.pullRepo(props.repoPath);
       if (result.ok) {
         const cache = await window.electronAPI.getCache();
-        setRepos(Object.entries(cache.repos || {}).map(cacheEntryToRepoInfo));
+        setRepos(Object.entries(cache.repos || {}).map((e) => cacheEntryToRepoInfo(e)));
       }
       setMsg(result.ok ? `Pulled` : `Failed: ${result.error ?? "unknown"}`);
       setBusy(false);
@@ -333,7 +339,7 @@ export default function App() {
       const result = await window.electronAPI.pushRepo(props.repoPath);
       if (result.ok) {
         const cache = await window.electronAPI.getCache();
-        setRepos(Object.entries(cache.repos || {}).map(cacheEntryToRepoInfo));
+        setRepos(Object.entries(cache.repos || {}).map((e) => cacheEntryToRepoInfo(e)));
       }
       setMsg(result.ok ? `Pushed` : `Failed: ${result.error ?? "unknown"}`);
       setBusy(false);
@@ -610,6 +616,17 @@ export default function App() {
             Skip pull check
           </label>
         </div>
+
+        <div class="border-t border-zinc-800/40 pt-3">
+          <button
+            onClick={async () => {
+              await updateRepoSettings(repo().path, { hidden: !repo().hidden });
+            }}
+            class="w-full text-left text-[11px] text-zinc-500 hover:text-zinc-300 transition-colors"
+          >
+            {repo().hidden ? "⊘ Unhide repo" : "⊘ Hide repo"}
+          </button>
+        </div>
         </div>
       </>
     );
@@ -796,6 +813,13 @@ export default function App() {
               <span class="text-zinc-400 tabular-nums">{listData().counts.clean}</span>
               <span class="text-zinc-600">clean</span>
             </div>
+            <Show when={listData().counts.hidden > 0}>
+              <div class="flex items-center gap-1.5 text-[11px]">
+                <span class="text-zinc-700">⊘</span>
+                <span class="text-zinc-600 tabular-nums">{listData().counts.hidden}</span>
+                <span class="text-zinc-700">hidden</span>
+              </div>
+            </Show>
             <div class="ml-auto flex items-center gap-3">
               <div class="flex items-center gap-2">
                 <span class="text-[11px] text-zinc-600">sort</span>
@@ -842,6 +866,9 @@ export default function App() {
             </Show>
             <Show when={listData().counts.clean > 0}>
               <Section title="Clean" icon="·" repos={listData().groups.clean} />
+            </Show>
+            <Show when={listData().counts.hidden > 0}>
+              <Section title="Hidden" icon="⊘" repos={listData().groups.hidden} />
             </Show>
           </Show>
         </Show>

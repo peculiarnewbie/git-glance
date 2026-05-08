@@ -1,7 +1,7 @@
 import { app, BrowserWindow, ipcMain, dialog } from "electron";
 import path from "path";
 import fs from "fs";
-import { execSync, exec } from "child_process";
+import { exec } from "child_process";
 import { fileURLToPath } from "url";
 
 const __filename = fileURLToPath(import.meta.url);
@@ -188,6 +188,7 @@ ipcMain.handle("update-repo-settings", (_, repoPath, settings) => {
   if (!cache.repos[repoPath]) return false;
   if (settings.skipUntracked !== undefined) cache.repos[repoPath].skipUntracked = settings.skipUntracked;
   if (settings.skipPullCheck !== undefined) cache.repos[repoPath].skipPullCheck = settings.skipPullCheck;
+  if (settings.hidden !== undefined) cache.repos[repoPath].hidden = settings.hidden;
   saveCache(cache);
   return true;
 });
@@ -197,7 +198,7 @@ ipcMain.handle("update-repo-settings", (_, repoPath, settings) => {
 ipcMain.handle("pull-repo", async (_, repoPath) => {
   let output;
   try {
-    output = execSync(`git pull`, { cwd: repoPath, timeout: 30000, encoding: "utf-8" }).trim();
+    output = await execAsync("git pull", { cwd: repoPath, timeout: 30000 });
   } catch (err) {
     return { ok: false, error: err.message || String(err) };
   }
@@ -205,6 +206,7 @@ ipcMain.handle("pull-repo", async (_, repoPath) => {
   // Rescan repo after successful pull and update cache
   const status = await getGitStatusAsync(repoPath);
   const cache = loadCache();
+  const existing = cache.repos[repoPath] || {};
   cache.repos[repoPath] = {
     name: path.basename(repoPath),
     branch: status.branch || null,
@@ -219,6 +221,7 @@ ipcMain.handle("pull-repo", async (_, repoPath) => {
     weekCommits: status.weekCommits ?? 0,
     lastScanTime: Date.now(),
     error: status.error || null,
+    hidden: existing.hidden === true,
   };
   saveCache(cache);
 
@@ -228,7 +231,7 @@ ipcMain.handle("pull-repo", async (_, repoPath) => {
 ipcMain.handle("push-repo", async (_, repoPath) => {
   let output;
   try {
-    output = execSync(`git push`, { cwd: repoPath, timeout: 30000, encoding: "utf-8" }).trim();
+    output = await execAsync("git push", { cwd: repoPath, timeout: 30000 });
   } catch (err) {
     return { ok: false, error: err.message || String(err) };
   }
@@ -236,6 +239,7 @@ ipcMain.handle("push-repo", async (_, repoPath) => {
   // Rescan repo after successful push and update cache
   const status = await getGitStatusAsync(repoPath);
   const cache = loadCache();
+  const existing = cache.repos[repoPath] || {};
   cache.repos[repoPath] = {
     name: path.basename(repoPath),
     branch: status.branch || null,
@@ -250,6 +254,7 @@ ipcMain.handle("push-repo", async (_, repoPath) => {
     weekCommits: status.weekCommits ?? 0,
     lastScanTime: Date.now(),
     error: status.error || null,
+    hidden: existing.hidden === true,
   };
   saveCache(cache);
 
@@ -359,6 +364,7 @@ ipcMain.on("commit-and-push", async (event, repoPath) => {
 
     const status = await getGitStatusAsync(repoPath);
     const cache = loadCache();
+    const existing = cache.repos[repoPath] || {};
     cache.repos[repoPath] = {
       name: path.basename(repoPath),
       branch: status.branch || null,
@@ -371,9 +377,11 @@ ipcMain.on("commit-and-push", async (event, repoPath) => {
       remote: status.remote || null,
       lastCommitTime: status.lastCommitTime,
       weekCommits: status.weekCommits ?? 0,
-      lastScanTime: Date.now(),
-      error: status.error || null,
-    };
+    lastScanTime: Date.now(),
+    error: status.error || null,
+    hidden: existing.hidden === true,
+  };
+
     saveCache(cache);
 
     send("done", { subject, body, repoPath });
@@ -397,7 +405,7 @@ ipcMain.on("cancel-background-fetch", () => {
 ipcMain.on("background-fetch", async (event, repoPaths) => {
   cancelFetch = false;
   const cache = loadCache();
-  const filtered = repoPaths.filter(p => cache.repos[p] && !cache.repos[p].skipPullCheck);
+  const filtered = repoPaths.filter(p => cache.repos[p] && !cache.repos[p].skipPullCheck && !cache.repos[p].hidden);
   let completed = 0;
   const total = filtered.length;
 
@@ -476,9 +484,11 @@ ipcMain.on("start-scan", async (event, dirPath) => {
     while (nextIndex < sorted.length && !cancelScan) {
       const idx = nextIndex++;
       const repoPath = sorted[idx];
-      const name = path.basename(repoPath);
-
       const existingEntry = cache.repos[repoPath] || {};
+
+      if (existingEntry.hidden) continue;
+
+      const name = path.basename(repoPath);
       const skipUntracked = existingEntry.skipUntracked === true;
       const skipPullCheck = existingEntry.skipPullCheck === true;
 
@@ -517,7 +527,7 @@ ipcMain.on("start-scan", async (event, dirPath) => {
 
   const scannedPaths = new Set(sorted);
   for (const p of Object.keys(cache.repos)) {
-    if (!scannedPaths.has(p)) delete cache.repos[p];
+    if (!scannedPaths.has(p) && !cache.repos[p]?.hidden) delete cache.repos[p];
   }
 
   saveCache(cache);
