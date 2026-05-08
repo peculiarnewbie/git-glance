@@ -181,6 +181,16 @@ ipcMain.handle("set-config", (_, config) => {
 
 let cancelScan = false;
 let cancelCommit = false;
+let cancelFetch = false;
+
+ipcMain.handle("update-repo-settings", (_, repoPath, settings) => {
+  const cache = loadCache();
+  if (!cache.repos[repoPath]) return false;
+  if (settings.skipUntracked !== undefined) cache.repos[repoPath].skipUntracked = settings.skipUntracked;
+  if (settings.skipPullCheck !== undefined) cache.repos[repoPath].skipPullCheck = settings.skipPullCheck;
+  saveCache(cache);
+  return true;
+});
 
 // ── Pull / Push ───────────────────────────────────────────────────
 
@@ -380,6 +390,70 @@ ipcMain.on("cancel-scan", () => {
   cancelScan = true;
 });
 
+ipcMain.on("cancel-background-fetch", () => {
+  cancelFetch = true;
+});
+
+ipcMain.on("background-fetch", async (event, repoPaths) => {
+  cancelFetch = false;
+  const cache = loadCache();
+  const filtered = repoPaths.filter(p => cache.repos[p] && !cache.repos[p].skipPullCheck);
+  let completed = 0;
+  const total = filtered.length;
+
+  for (const repoPath of filtered) {
+    if (cancelFetch) return;
+
+    const repoName = path.basename(repoPath);
+    event.sender.send("fetch-progress", {
+      phase: "fetching", repoPath, repoName,
+      current: completed, total,
+    });
+
+    try {
+      await execAsync("git fetch origin", { cwd: repoPath, timeout: 30000 });
+      if (cancelFetch) return;
+
+      const branch = await execAsync("git rev-parse --abbrev-ref HEAD", { cwd: repoPath, timeout: 5000 });
+      const remote = await execAsync(
+        `git rev-parse --abbrev-ref --symbolic-full-name @{upstream} ${nullRedirect}`,
+        { cwd: repoPath, timeout: 5000 },
+      );
+      let ahead = 0, behind = 0;
+      if (remote) {
+        const revList = await execAsync("git rev-list --left-right --count HEAD...@{upstream}", { cwd: repoPath, timeout: 10000 });
+        if (revList) {
+          const parts = revList.split(/\s+/);
+          ahead = parseInt(parts[0]) || 0;
+          behind = parseInt(parts[1]) || 0;
+        }
+      }
+
+      if (cache.repos[repoPath]) {
+        cache.repos[repoPath].ahead = ahead;
+        cache.repos[repoPath].behind = behind;
+        cache.repos[repoPath].branch = branch || cache.repos[repoPath].branch;
+      }
+
+      completed++;
+      event.sender.send("fetch-progress", {
+        phase: "repo", repoPath, ahead, behind, branch,
+        current: completed, total,
+      });
+    } catch (err) {
+      completed++;
+      event.sender.send("fetch-progress", {
+        phase: "repo", repoPath,
+        error: err.stderr?.trim() || err.message || String(err),
+        current: completed, total,
+      });
+    }
+  }
+
+  saveCache(cache);
+  event.sender.send("fetch-progress", { phase: "done" });
+});
+
 ipcMain.on("start-scan", async (event, dirPath) => {
   cancelScan = false;
   const repos = findGitRepos(dirPath);
@@ -404,16 +478,24 @@ ipcMain.on("start-scan", async (event, dirPath) => {
       const repoPath = sorted[idx];
       const name = path.basename(repoPath);
 
+      const existingEntry = cache.repos[repoPath] || {};
+      const skipUntracked = existingEntry.skipUntracked === true;
+      const skipPullCheck = existingEntry.skipPullCheck === true;
+
       const status = await getGitStatusAsync(repoPath);
-      const repoInfo = { path: repoPath, name, status };
+      const untracked = skipUntracked ? 0 : (status.untracked ?? 0);
+      const repoInfo = { path: repoPath, name, status, skipUntracked, skipPullCheck };
+      const hasChanges = (status.staged ?? 0) > 0 || (status.unstaged ?? 0) > 0 || untracked > 0;
 
       cache.repos[repoPath] = {
         name,
         branch: status.branch || null,
-        hasChanges: !!status.hasChanges,
+        skipUntracked,
+        skipPullCheck,
+        hasChanges,
         staged: status.staged ?? 0,
         unstaged: status.unstaged ?? 0,
-        untracked: status.untracked ?? 0,
+        untracked,
         ahead: status.ahead ?? 0,
         behind: status.behind ?? 0,
         remote: status.remote || null,

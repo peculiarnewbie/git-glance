@@ -1,6 +1,6 @@
 import { createSignal, For, Show, createMemo, onMount, onCleanup } from "solid-js";
 
-type SortKey = "last-commit" | "week-activity" | "name";
+type SortKey = "last-commit" | "week-activity" | "name" | "pull-count";
 
 interface GitStatus {
   branch: string;
@@ -21,6 +21,8 @@ interface RepoInfo {
   name: string;
   cached: boolean;
   status: GitStatus;
+  skipUntracked?: boolean;
+  skipPullCheck?: boolean;
 }
 
 function timeAgo(ts: number): string {
@@ -35,6 +37,29 @@ function timeAgo(ts: number): string {
   const weeks = Math.floor(days / 7);
   if (weeks < 8) return `${weeks}w ago`;
   return new Date(ts).toLocaleDateString();
+}
+
+function cacheEntryToRepoInfo([p, d]: [string, any], cached = false): RepoInfo {
+  return {
+    path: p,
+    name: d.name,
+    cached,
+    skipUntracked: d.skipUntracked === true,
+    skipPullCheck: d.skipPullCheck === true,
+    status: {
+      branch: d.branch || "",
+      remote: d.remote || null,
+      hasChanges: !!d.hasChanges,
+      staged: d.staged ?? 0,
+      unstaged: d.unstaged ?? 0,
+      untracked: d.untracked ?? 0,
+      ahead: d.ahead ?? 0,
+      behind: d.behind ?? 0,
+      lastCommitTime: d.lastCommitTime ?? null,
+      weekCommits: d.weekCommits ?? 0,
+      error: d.error || undefined,
+    },
+  };
 }
 
 export default function App() {
@@ -53,9 +78,13 @@ export default function App() {
   const [commitBusy, setCommitBusy] = createSignal<string | null>(null);
   const [commitPhase, setCommitPhase] = createSignal<string>("");
   const [commitError, setCommitError] = createSignal<string | null>(null);
+  const [fetching, setFetching] = createSignal(false);
+  const [fetchProgress, setFetchProgress] = createSignal<{ current: number; total: number }>({ current: 0, total: 0 });
+  const [fetchCurrentRepo, setFetchCurrentRepo] = createSignal<string>("");
 
   let removeScanListener: (() => void) | null = null;
   let removeCommitListener: (() => void) | null = null;
+  let removeFetchListener: (() => void) | null = null;
   let repoBuffer: RepoInfo[] = [];
   let flushTimer: number | null = null;
 
@@ -94,24 +123,7 @@ export default function App() {
         setCommitPhase("");
       } else if (data.phase === "done") {
         window.electronAPI.getCache().then((cache) => {
-          setRepos(Object.entries(cache.repos || {}).map(([p, d]: [string, any]) => ({
-            path: p,
-            name: d.name,
-            cached: false,
-            status: {
-              branch: d.branch || "",
-              remote: d.remote || null,
-              hasChanges: !!d.hasChanges,
-              staged: d.staged ?? 0,
-              unstaged: d.unstaged ?? 0,
-              untracked: d.untracked ?? 0,
-              ahead: d.ahead ?? 0,
-              behind: d.behind ?? 0,
-              lastCommitTime: d.lastCommitTime ?? null,
-              weekCommits: d.weekCommits ?? 0,
-              error: d.error || undefined,
-            },
-          })));
+          setRepos(Object.entries(cache.repos || {}).map(cacheEntryToRepoInfo));
         });
         setCommitBusy(null);
         setCommitPhase("");
@@ -122,29 +134,42 @@ export default function App() {
       }
     });
 
+    removeFetchListener = window.electronAPI.onFetchProgress((data) => {
+      if (data.phase === "fetching") {
+        setFetchCurrentRepo(data.repoName || data.repoPath);
+        setFetchProgress({ current: data.current, total: data.total });
+      } else if (data.phase === "repo") {
+        setRepos(prev => {
+          const next = prev.slice();
+          const idx = next.findIndex(r => r.path === data.repoPath);
+          if (idx >= 0) {
+            const old = next[idx];
+            next[idx] = {
+              ...old,
+              cached: false,
+              status: {
+                ...old.status,
+                ahead: data.ahead ?? old.status.ahead,
+                behind: data.behind ?? old.status.behind,
+                branch: data.branch || old.status.branch,
+                error: data.error || old.status.error,
+              },
+            };
+          }
+          return next;
+        });
+        setFetchProgress({ current: data.current, total: data.total });
+      } else if (data.phase === "done") {
+        setFetching(false);
+        setFetchCurrentRepo("");
+      }
+    });
+
     const savedDir = await window.electronAPI.getSavedDir();
     if (savedDir) {
       setDir(savedDir);
       const cache = await window.electronAPI.getCache();
-      const cached = Object.entries(cache.repos || {}).map(([p, d]: [string, any]) => ({
-        path: p,
-        name: d.name,
-        cached: true,
-        status: {
-          branch: d.branch || "",
-          remote: d.remote || null,
-          hasChanges: !!d.hasChanges,
-          staged: d.staged ?? 0,
-          unstaged: d.unstaged ?? 0,
-          untracked: d.untracked ?? 0,
-          ahead: d.ahead ?? 0,
-          behind: d.behind ?? 0,
-          lastCommitTime: d.lastCommitTime ?? null,
-          weekCommits: d.weekCommits ?? 0,
-          error: d.error || undefined,
-        },
-      }));
-      setRepos(cached);
+      setRepos(Object.entries(cache.repos || {}).map((e) => cacheEntryToRepoInfo(e, true)));
     }
     setLoading(false);
   });
@@ -152,6 +177,7 @@ export default function App() {
   onCleanup(() => {
     if (removeScanListener) removeScanListener();
     if (removeCommitListener) removeCommitListener();
+    if (removeFetchListener) removeFetchListener();
     if (flushTimer !== null) clearTimeout(flushTimer);
   });
 
@@ -187,6 +213,12 @@ export default function App() {
         if (flushTimer !== null) { clearTimeout(flushTimer); flushTimer = null; }
         flushRepoBuffer();
         setScanning(false);
+        const allPaths = repos().map(r => r.path);
+        if (allPaths.length > 0) {
+          setFetching(true);
+          setFetchProgress({ current: 0, total: allPaths.length });
+          window.electronAPI.startBackgroundFetch(allPaths);
+        }
       }
     });
     removeScanListener = cleanup;
@@ -202,6 +234,19 @@ export default function App() {
     setScanning(false);
   }
 
+  async function updateRepoSettings(repoPath: string, settings: { skipUntracked?: boolean; skipPullCheck?: boolean }) {
+    await window.electronAPI.updateRepoSettings(repoPath, settings);
+    setRepos(prev => {
+      const next = prev.slice();
+      const idx = next.findIndex(r => r.path === repoPath);
+      if (idx >= 0) {
+        next[idx] = { ...next[idx], ...settings };
+      }
+      return next;
+    });
+  }
+
+  const selectedRepoData = () => repos().find(r => r.path === selectedRepo());
   const hasCached = () => repos().some(r => r.cached);
 
   const listData = createMemo(() => {
@@ -213,7 +258,9 @@ export default function App() {
       ? (a: RepoInfo, b: RepoInfo) => (b.status.lastCommitTime ?? 0) - (a.status.lastCommitTime ?? 0)
       : key === "week-activity"
         ? (a: RepoInfo, b: RepoInfo) => b.status.weekCommits - a.status.weekCommits
-        : (a: RepoInfo, b: RepoInfo) => a.name.localeCompare(b.name);
+        : key === "pull-count"
+          ? (a: RepoInfo, b: RepoInfo) => (b.status.behind ?? 0) - (a.status.behind ?? 0)
+          : (a: RepoInfo, b: RepoInfo) => a.name.localeCompare(b.name);
 
     const errored: RepoInfo[] = [];
     const stale: RepoInfo[] = [];
@@ -256,24 +303,7 @@ export default function App() {
       const result = await window.electronAPI.pullRepo(props.repoPath);
       if (result.ok) {
         const cache = await window.electronAPI.getCache();
-        setRepos(Object.entries(cache.repos || {}).map(([p, d]: [string, any]) => ({
-          path: p,
-          name: d.name,
-          cached: false,
-          status: {
-            branch: d.branch || "",
-            remote: d.remote || null,
-            hasChanges: !!d.hasChanges,
-            staged: d.staged ?? 0,
-            unstaged: d.unstaged ?? 0,
-            untracked: d.untracked ?? 0,
-            ahead: d.ahead ?? 0,
-            behind: d.behind ?? 0,
-            lastCommitTime: d.lastCommitTime ?? null,
-            weekCommits: d.weekCommits ?? 0,
-            error: d.error || undefined,
-          },
-        })));
+        setRepos(Object.entries(cache.repos || {}).map(cacheEntryToRepoInfo));
       }
       setMsg(result.ok ? `Pulled` : `Failed: ${result.error ?? "unknown"}`);
       setBusy(false);
@@ -303,24 +333,7 @@ export default function App() {
       const result = await window.electronAPI.pushRepo(props.repoPath);
       if (result.ok) {
         const cache = await window.electronAPI.getCache();
-        setRepos(Object.entries(cache.repos || {}).map(([p, d]: [string, any]) => ({
-          path: p,
-          name: d.name,
-          cached: false,
-          status: {
-            branch: d.branch || "",
-            remote: d.remote || null,
-            hasChanges: !!d.hasChanges,
-            staged: d.staged ?? 0,
-            unstaged: d.unstaged ?? 0,
-            untracked: d.untracked ?? 0,
-            ahead: d.ahead ?? 0,
-            behind: d.behind ?? 0,
-            lastCommitTime: d.lastCommitTime ?? null,
-            weekCommits: d.weekCommits ?? 0,
-            error: d.error || undefined,
-          },
-        })));
+        setRepos(Object.entries(cache.repos || {}).map(cacheEntryToRepoInfo));
       }
       setMsg(result.ok ? `Pushed` : `Failed: ${result.error ?? "unknown"}`);
       setBusy(false);
@@ -410,7 +423,7 @@ export default function App() {
     const isSelected = () => selectedRepo() === repo().path;
     return (
       <div
-        class="border rounded-lg overflow-hidden transition-all duration-150"
+        class="border rounded-lg overflow-hidden transition-all duration-150 cursor-pointer"
         classList={{
           "bg-zinc-900/60 border-zinc-800/60 hover:border-zinc-700/60": !isSelected(),
           "bg-zinc-900 border-red-500/30 ring-1 ring-red-500/10": isSelected() && !!repo().status.error,
@@ -419,11 +432,9 @@ export default function App() {
           "bg-zinc-900 border-emerald-500/30 ring-1 ring-emerald-500/10": isSelected() && !repo().status.error && repo().status.behind === 0 && !repo().status.hasChanges,
           "opacity-60": repo().cached && !isSelected(),
         }}
+        onClick={() => setSelectedRepo(isSelected() ? null : repo().path)}
       >
-        <button
-          onClick={() => setSelectedRepo(isSelected() ? null : repo().path)}
-          class="w-full flex items-center justify-between px-3 py-2 hover:bg-white/[0.015] transition-colors text-left"
-        >
+        <div class="flex items-center justify-between px-3 py-2">
           <div class="flex items-center gap-2.5 min-w-0">
             <div
               class="w-2 h-2 rounded-full shrink-0 shadow-sm"
@@ -467,68 +478,140 @@ export default function App() {
                 </span>
               </Show>
             </Show>
-            <svg
-              class="w-3 h-3 text-zinc-700 transition-transform duration-150"
-              classList={{ "rotate-180": isSelected() }}
-              fill="none" viewBox="0 0 24 24" stroke="currentColor"
-            >
-              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7" />
-            </svg>
           </div>
-        </button>
+        </div>
+      </div>
+    );
+  }
 
-        <Show when={isSelected()}>
-          <div class="border-t border-zinc-800/40 px-3 py-2">
-            <Show when={repo().status.error}>
-              <div class="text-red-400/80 text-[11px]">Error: {repo().status.error}</div>
-            </Show>
-            <Show when={!repo().status.error}>
-              <div class="flex items-center gap-4 text-[11px]">
-                <div class="flex items-center gap-1.5">
-                  <span class="tabular-nums" classList={{
-                    "text-amber-400/80": repo().status.staged > 0,
-                    "text-zinc-600": repo().status.staged === 0,
-                  }}>{repo().status.staged}</span>
-                  <span class="text-zinc-600">staged</span>
-                </div>
-                <div class="flex items-center gap-1.5">
-                  <span class="tabular-nums" classList={{
-                    "text-amber-400/80": repo().status.unstaged > 0,
-                    "text-zinc-600": repo().status.unstaged === 0,
-                  }}>{repo().status.unstaged}</span>
-                  <span class="text-zinc-600">unstaged</span>
-                </div>
-                <div class="flex items-center gap-1.5">
-                  <span class="tabular-nums" classList={{
-                    "text-amber-400/80": repo().status.untracked > 0,
-                    "text-zinc-600": repo().status.untracked === 0,
-                  }}>{repo().status.untracked}</span>
-                  <span class="text-zinc-600">untracked</span>
-                </div>
-                <Show when={repo().status.remote}>
-                  <span class="text-zinc-600">·</span>
-                  <span class="text-zinc-600 text-[10px]">{repo().status.remote}</span>
-                </Show>
+  function Sidebar(props: { repo: RepoInfo }) {
+    const repo = () => props.repo;
+    return (
+      <>
+        <div class="fixed inset-0 z-30" onClick={() => setSelectedRepo(null)} />
+        <div class="fixed top-0 right-0 z-40 h-full w-80 bg-[#09090b] border-l border-zinc-800/50 shadow-2xl p-5 overflow-y-auto">
+        <div class="flex items-center justify-between mb-4">
+          <h2 class="text-sm font-semibold text-zinc-100 truncate">{repo().name}</h2>
+          <button
+            onClick={() => setSelectedRepo(null)}
+            class="text-zinc-600 hover:text-zinc-400 transition-colors shrink-0 ml-2"
+          >
+            <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
+            </svg>
+          </button>
+        </div>
+
+        <div class="text-[11px] text-zinc-600 truncate mb-4">{repo().path}</div>
+
+        <Show when={repo().status.error}>
+          <div class="text-red-400/80 text-[11px] mb-3 p-2 bg-red-500/5 rounded border border-red-500/10">{repo().status.error}</div>
+        </Show>
+
+        <Show when={!repo().status.error}>
+          <div class="space-y-2.5 mb-4">
+            <div class="flex items-center justify-between text-[11px]">
+              <span class="text-zinc-600">Branch</span>
+              <span class="text-zinc-300 font-medium">{repo().status.branch}</span>
+            </div>
+            <Show when={repo().status.remote}>
+              <div class="flex items-center justify-between text-[11px]">
+                <span class="text-zinc-600">Remote</span>
+                <span class="text-zinc-400 truncate ml-4 text-right">{repo().status.remote}</span>
               </div>
             </Show>
-            <Show when={repo().status.ahead > 0 || repo().status.behind > 0}>
-              <div class="flex items-center gap-2 mt-2 pt-2 border-t border-zinc-800/30">
-                <Show when={repo().status.behind > 0}>
-                  <PullButton repoPath={repo().path} repoName={repo().name} behind={repo().status.behind} />
-                </Show>
-                <Show when={repo().status.ahead > 0}>
-                  <PushButton repoPath={repo().path} repoName={repo().name} ahead={repo().status.ahead} />
-                </Show>
+            <Show when={repo().status.lastCommitTime}>
+              <div class="flex items-center justify-between text-[11px]">
+                <span class="text-zinc-600">Last commit</span>
+                <span class="text-zinc-400">{timeAgo(repo().status.lastCommitTime!)}</span>
               </div>
             </Show>
-            <Show when={!repo().status.error && (repo().status.staged > 0 || repo().status.unstaged > 0 || repo().status.untracked > 0)}>
-              <div class="flex items-center gap-2 mt-2 pt-2 border-t border-zinc-800/30">
-                <CommitButton repoPath={repo().path} />
+            <Show when={repo().status.weekCommits > 0}>
+              <div class="flex items-center justify-between text-[11px]">
+                <span class="text-zinc-600">This week</span>
+                <span class="text-blue-400/70">{repo().status.weekCommits} commits</span>
               </div>
+            </Show>
+          </div>
+
+          <div class="border-t border-zinc-800/40 pt-3 mb-4">
+            <div class="grid grid-cols-3 gap-3 text-center">
+              <div class="bg-zinc-900/60 rounded-lg p-2.5">
+                <div class="text-[13px] tabular-nums font-medium" classList={{
+                  "text-amber-400/80": repo().status.staged > 0,
+                  "text-zinc-500": repo().status.staged === 0,
+                }}>{repo().status.staged}</div>
+                <div class="text-[10px] text-zinc-600 mt-0.5">staged</div>
+              </div>
+              <div class="bg-zinc-900/60 rounded-lg p-2.5">
+                <div class="text-[13px] tabular-nums font-medium" classList={{
+                  "text-amber-400/80": repo().status.unstaged > 0,
+                  "text-zinc-500": repo().status.unstaged === 0,
+                }}>{repo().status.unstaged}</div>
+                <div class="text-[10px] text-zinc-600 mt-0.5">unstaged</div>
+              </div>
+              <div class="bg-zinc-900/60 rounded-lg p-2.5">
+                <div class="text-[13px] tabular-nums font-medium" classList={{
+                  "text-amber-400/80": repo().status.untracked > 0,
+                  "text-zinc-500": repo().status.untracked === 0,
+                }}>{repo().status.untracked}</div>
+                <div class="text-[10px] text-zinc-600 mt-0.5">untracked</div>
+              </div>
+            </div>
+            <div class="flex items-center justify-center gap-3 mt-2 text-[11px]">
+              <span classList={{
+                "text-emerald-400/80": repo().status.ahead > 0,
+                "text-zinc-600": repo().status.ahead === 0,
+              }}>⇡{repo().status.ahead} ahead</span>
+              <span classList={{
+                "text-orange-400/80": repo().status.behind > 0,
+                "text-zinc-600": repo().status.behind === 0,
+              }}>⇣{repo().status.behind} behind</span>
+            </div>
+          </div>
+
+          <div class="flex flex-wrap items-center gap-2 mb-4">
+            <Show when={repo().status.behind > 0}>
+              <PullButton repoPath={repo().path} repoName={repo().name} behind={repo().status.behind} />
+            </Show>
+            <Show when={repo().status.ahead > 0}>
+              <PushButton repoPath={repo().path} repoName={repo().name} ahead={repo().status.ahead} />
+            </Show>
+            <Show when={repo().status.staged > 0 || repo().status.unstaged > 0 || repo().status.untracked > 0}>
+              <CommitButton repoPath={repo().path} />
             </Show>
           </div>
         </Show>
-      </div>
+
+        <div class="border-t border-zinc-800/40 pt-3 mb-4">
+          <div class="text-[11px] font-medium text-zinc-500 uppercase tracking-[0.1em] mb-2">Scan Settings</div>
+          <label class="flex items-center gap-2 text-[11px] text-zinc-400 cursor-pointer select-none hover:text-zinc-300 transition-colors mb-1.5">
+            <input
+              type="checkbox"
+              checked={repo().skipUntracked === true}
+              onChange={async (e) => {
+                await updateRepoSettings(repo().path, { skipUntracked: e.currentTarget.checked });
+              }}
+              class="w-3 h-3 appearance-none bg-zinc-900 border border-zinc-700 rounded cursor-pointer"
+              classList={{ "bg-amber-500/20 border-amber-500/60": repo().skipUntracked }}
+            />
+            Skip untracked files
+          </label>
+          <label class="flex items-center gap-2 text-[11px] text-zinc-400 cursor-pointer select-none hover:text-zinc-300 transition-colors">
+            <input
+              type="checkbox"
+              checked={repo().skipPullCheck === true}
+              onChange={async (e) => {
+                await updateRepoSettings(repo().path, { skipPullCheck: e.currentTarget.checked });
+              }}
+              class="w-3 h-3 appearance-none bg-zinc-900 border border-zinc-700 rounded cursor-pointer"
+              classList={{ "bg-amber-500/20 border-amber-500/60": repo().skipPullCheck }}
+            />
+            Skip pull check
+          </label>
+        </div>
+        </div>
+      </>
     );
   }
 
@@ -657,6 +740,27 @@ export default function App() {
           </div>
         </Show>
 
+        <Show when={fetching() && fetchProgress().total > 0}>
+          <div class="mb-4">
+            <div class="flex items-center justify-between text-[11px] mb-1.5">
+              <div class="flex items-center gap-2">
+                <div class="w-1.5 h-1.5 bg-sky-500/60 rounded-full animate-pulse" />
+                <span class="text-zinc-500">Checking for pull updates...</span>
+              </div>
+              <span class="text-zinc-600 tabular-nums">{fetchProgress().current}/{fetchProgress().total}</span>
+            </div>
+            <div class="h-1 bg-zinc-800 rounded-full overflow-hidden">
+              <div
+                class="h-full bg-sky-500/60 rounded-full transition-all duration-300 ease-out"
+                style={{ width: `${(fetchProgress().current / fetchProgress().total) * 100}%` }}
+              />
+            </div>
+            <Show when={fetchCurrentRepo()}>
+              <div class="text-[10px] text-zinc-600 mt-1 truncate">{fetchCurrentRepo()}</div>
+            </Show>
+          </div>
+        </Show>
+
         <Show when={loading()}>
           <div class="text-center py-20 text-zinc-700">
             <p class="text-sm">Loading...</p>
@@ -703,6 +807,7 @@ export default function App() {
                   <option value="last-commit">last commit</option>
                   <option value="week-activity">weekly activity</option>
                   <option value="name">name</option>
+                  <option value="pull-count">pull count</option>
                 </select>
               </div>
               <label class="flex items-center gap-1.5 text-[11px] text-zinc-600 cursor-pointer select-none hover:text-zinc-400 transition-colors">
@@ -748,6 +853,10 @@ export default function App() {
           </div>
         </Show>
       </div>
+
+      <Show when={selectedRepoData()}>
+        <Sidebar repo={selectedRepoData()!} />
+      </Show>
     </div>
   );
 }

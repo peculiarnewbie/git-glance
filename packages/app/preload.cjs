@@ -23,4 +23,12 @@ contextBridge.exposeInMainWorld("electronAPI", {
     ipcRenderer.on("scan-progress", handler);
     return () => ipcRenderer.removeListener("scan-progress", handler);
   },
+  updateRepoSettings: (repoPath, settings) => ipcRenderer.invoke("update-repo-settings", repoPath, settings),
+  startBackgroundFetch: (repoPaths) => ipcRenderer.send("background-fetch", repoPaths),
+  cancelBackgroundFetch: () => ipcRenderer.send("cancel-background-fetch"),
+  onFetchProgress: (callback) => {
+    const handler = (_event, data) => callback(data);
+    ipcRenderer.on("fetch-progress", handler);
+    return () => ipcRenderer.removeListener("fetch-progress", handler);
+  },
 });
