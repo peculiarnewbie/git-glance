@@ -15,6 +15,7 @@ let useDevServer = false;
 
 const cachePath = path.join(app.getPath("userData"), "repo-cache.json");
 const dirStorePath = path.join(app.getPath("userData"), "saved-dir.txt");
+const configPath = path.join(app.getPath("userData"), "config.json");
 const isWindows = process.platform === "win32";
 const nullRedirect = isWindows ? "2>nul" : "2>/dev/null";
 
@@ -45,6 +46,20 @@ function saveSavedDir(dir) {
   const dir2 = path.dirname(dirStorePath);
   if (!fs.existsSync(dir2)) fs.mkdirSync(dir2, { recursive: true });
   fs.writeFileSync(dirStorePath, dir, "utf-8");
+}
+
+function loadConfig() {
+  try {
+    return JSON.parse(fs.readFileSync(configPath, "utf-8"));
+  } catch {
+    return { opencodeModel: "CrofAI/deepseek-v4-flash" };
+  }
+}
+
+function saveConfig(config) {
+  const dir = path.dirname(configPath);
+  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(configPath, JSON.stringify(config, null, 2), "utf-8");
 }
 
 async function isViteDevRunning() {
@@ -145,7 +160,14 @@ ipcMain.handle("save-dir", (_, dir) => {
   saveSavedDir(dir);
 });
 
+ipcMain.handle("get-config", () => loadConfig());
+
+ipcMain.handle("set-config", (_, config) => {
+  saveConfig(config);
+});
+
 let cancelScan = false;
+let cancelCommit = false;
 
 // ── Pull / Push ───────────────────────────────────────────────────
 
@@ -209,6 +231,146 @@ ipcMain.handle("push-repo", async (_, repoPath) => {
   saveCache(cache);
 
   return { ok: true, output };
+});
+
+// ── Commit & Push ────────────────────────────────────────────────
+
+function buildCommitMessagePrompt(branch, stagedSummary, stagedPatch) {
+  const truncate = (str, max) => str.length > max ? str.slice(0, max) + "\n... [truncated]" : str;
+  return [
+    "You write concise git commit messages.",
+    'Return a JSON object with keys: subject, body.',
+    "Rules:",
+    "- subject must be imperative, <= 72 chars, and no trailing period",
+    "- body can be empty string or short bullet points",
+    "- capture the primary user-visible or developer-visible change",
+    "",
+    `Branch: ${branch ?? "(detached)"}`,
+    "",
+    "Staged files:",
+    truncate(stagedSummary, 6000),
+    "",
+    "Staged patch:",
+    truncate(stagedPatch, 40000),
+  ].join("\n");
+}
+
+ipcMain.on("commit-and-push", async (event, repoPath) => {
+  cancelCommit = false;
+  const send = (phase, data = {}) => {
+    if (!cancelCommit) event.sender.send("commit-progress", { phase, ...data });
+  };
+
+  try {
+    send("staging");
+    execSync("git add .", { cwd: repoPath, timeout: 15000, encoding: "utf-8" });
+
+    if (cancelCommit) return;
+
+    const branch = execSync("git rev-parse --abbrev-ref HEAD", {
+      cwd: repoPath, timeout: 5000, encoding: "utf-8",
+    }).trim();
+
+    const stagedSummary = execSync("git diff --cached --stat", {
+      cwd: repoPath, timeout: 10000, encoding: "utf-8",
+    }).trim();
+    const stagedPatch = execSync("git diff --cached", {
+      cwd: repoPath, timeout: 10000, encoding: "utf-8",
+      maxBuffer: 50 * 1024 * 1024,
+    }).trim();
+
+    if (!stagedPatch) {
+      send("error", { error: "No changes to commit. Stage some changes first." });
+      return;
+    }
+
+    if (cancelCommit) return;
+
+    send("generating");
+    const prompt = buildCommitMessagePrompt(branch, stagedSummary, stagedPatch);
+    const config = loadConfig();
+    const model = config.opencodeModel || "CrofAI/deepseek-v4-flash";
+    const opencodeOutput = execSync(`opencode run --format json -m "${model}" --dir "${repoPath}"`, {
+      input: prompt,
+      timeout: 120000,
+      encoding: "utf-8",
+      maxBuffer: 10 * 1024 * 1024,
+    });
+
+    if (cancelCommit) return;
+
+    let rawText = "";
+    for (const line of opencodeOutput.split("\n").filter(l => l.trim())) {
+      try {
+        const ev = JSON.parse(line);
+        if (ev.type === "text" && typeof ev.part?.text === "string") {
+          rawText += ev.part.text;
+        }
+      } catch {}
+    }
+
+    if (!rawText) {
+      send("error", { error: "Failed to generate commit message from opencode." });
+      return;
+    }
+
+    const jsonMatch = rawText.match(/\{[\s\S]*\}/);
+    if (!jsonMatch) {
+      send("error", { error: "Could not parse commit message JSON from opencode response." });
+      return;
+    }
+    const parsed = JSON.parse(jsonMatch[0]);
+    const subject = parsed.subject?.trim();
+    const body = parsed.body?.trim() ?? "";
+
+    if (!subject) {
+      send("error", { error: "Generated commit message has no subject." });
+      return;
+    }
+
+    if (cancelCommit) return;
+
+    send("committing");
+    const msgFile = path.join(app.getPath("userData"), "commit-msg.txt");
+    const fullMessage = body ? `${subject}\n\n${body}` : subject;
+    fs.writeFileSync(msgFile, fullMessage, "utf-8");
+    execSync(`git commit -F "${msgFile}"`, { cwd: repoPath, timeout: 15000, encoding: "utf-8" });
+    fs.unlinkSync(msgFile);
+
+    if (cancelCommit) return;
+
+    send("pushing");
+    execSync("git push", { cwd: repoPath, timeout: 60000, encoding: "utf-8" });
+
+    if (cancelCommit) return;
+
+    const status = await getGitStatusAsync(repoPath);
+    const cache = loadCache();
+    cache.repos[repoPath] = {
+      name: path.basename(repoPath),
+      branch: status.branch || null,
+      hasChanges: !!status.hasChanges,
+      staged: status.staged ?? 0,
+      unstaged: status.unstaged ?? 0,
+      untracked: status.untracked ?? 0,
+      ahead: status.ahead ?? 0,
+      behind: status.behind ?? 0,
+      remote: status.remote || null,
+      lastCommitTime: status.lastCommitTime,
+      weekCommits: status.weekCommits ?? 0,
+      lastScanTime: Date.now(),
+      error: status.error || null,
+    };
+    saveCache(cache);
+
+    send("done", { subject, body, repoPath });
+  } catch (err) {
+    send("error", { error: err.stderr?.trim() || err.message || String(err) });
+  }
+});
+
+ipcMain.on("cancel-commit", () => {
+  cancelCommit = true;
 });
 
 ipcMain.on("cancel-scan", () => {

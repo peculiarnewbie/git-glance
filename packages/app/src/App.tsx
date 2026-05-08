@@ -47,8 +47,15 @@ export default function App() {
   const [grouped, setGrouped] = createSignal(true);
   const [collapsed, setCollapsed] = createSignal<Set<string>>(new Set());
   const [loading, setLoading] = createSignal(true);
+  const [config, setConfig] = createSignal<{ opencodeModel: string }>({ opencodeModel: "CrofAI/deepseek-v4-flash" });
+  const [showSettings, setShowSettings] = createSignal(false);
+  const [modelDraft, setModelDraft] = createSignal("");
+  const [commitBusy, setCommitBusy] = createSignal<string | null>(null);
+  const [commitPhase, setCommitPhase] = createSignal<string>("");
+  const [commitError, setCommitError] = createSignal<string | null>(null);
 
   let removeScanListener: (() => void) | null = null;
+  let removeCommitListener: (() => void) | null = null;
   let repoBuffer: RepoInfo[] = [];
   let flushTimer: number | null = null;
 
@@ -77,6 +84,44 @@ export default function App() {
   }
 
   onMount(async () => {
+    const savedConfig = await window.electronAPI.getConfig();
+    if (savedConfig?.opencodeModel) setConfig(savedConfig);
+
+    removeCommitListener = window.electronAPI.onCommitProgress((data) => {
+      if (data.phase === "error") {
+        setCommitError(data.error);
+        setCommitBusy(null);
+        setCommitPhase("");
+      } else if (data.phase === "done") {
+        window.electronAPI.getCache().then((cache) => {
+          setRepos(Object.entries(cache.repos || {}).map(([p, d]: [string, any]) => ({
+            path: p,
+            name: d.name,
+            cached: false,
+            status: {
+              branch: d.branch || "",
+              remote: d.remote || null,
+              hasChanges: !!d.hasChanges,
+              staged: d.staged ?? 0,
+              unstaged: d.unstaged ?? 0,
+              untracked: d.untracked ?? 0,
+              ahead: d.ahead ?? 0,
+              behind: d.behind ?? 0,
+              lastCommitTime: d.lastCommitTime ?? null,
+              weekCommits: d.weekCommits ?? 0,
+              error: d.error || undefined,
+            },
+          })));
+        });
+        setCommitBusy(null);
+        setCommitPhase("");
+        setCommitError(null);
+      } else {
+        setCommitPhase(data.phase);
+        setCommitError(null);
+      }
+    });
+
     const savedDir = await window.electronAPI.getSavedDir();
     if (savedDir) {
       setDir(savedDir);
@@ -106,6 +151,7 @@ export default function App() {
 
   onCleanup(() => {
     if (removeScanListener) removeScanListener();
+    if (removeCommitListener) removeCommitListener();
     if (flushTimer !== null) clearTimeout(flushTimer);
   });
 
@@ -294,6 +340,71 @@ export default function App() {
     );
   }
 
+  function CommitButton(props: { repoPath: string }) {
+    const isBusy = () => commitBusy() === props.repoPath;
+    const phaseLabel = () => {
+      const labels = {
+        staging: "Staging...",
+        generating: "Generating message...",
+        committing: "Committing...",
+        pushing: "Pushing...",
+      };
+      return labels[commitPhase() as keyof typeof labels] || "";
+    };
+    function start() {
+      if (commitBusy()) return;
+      setCommitBusy(props.repoPath);
+      setCommitPhase("staging");
+      setCommitError(null);
+      window.electronAPI.startCommitAndPush(props.repoPath);
+    }
+    function cancel() {
+      window.electronAPI.cancelCommit();
+      setCommitBusy(null);
+      setCommitPhase("");
+    }
+    return (
+      <div class="flex-1">
+        <Show when={!isBusy() && !commitError()}>
+          <button
+            onClick={start}
+            class="flex items-center gap-1 px-2 py-1 bg-sky-500/10 hover:bg-sky-500/20 border border-sky-500/20 rounded text-[11px] text-sky-400/80 transition-colors"
+          >
+            ⇡ Commit & Push
+          </button>
+        </Show>
+        <Show when={isBusy()}>
+          <div class="flex items-center gap-2">
+            <div class="h-1 bg-zinc-800 rounded-full overflow-hidden flex-1 min-w-[60px]">
+              <div
+                class="h-full bg-sky-500/60 rounded-full transition-all duration-300 ease-out animate-pulse"
+                style={{ width: "100%" }}
+              />
+            </div>
+            <span class="text-[10px] text-zinc-500 tabular-nums">{phaseLabel()}</span>
+            <button
+              onClick={cancel}
+              class="text-[10px] text-zinc-600 hover:text-zinc-400 transition-colors"
+            >
+              cancel
+            </button>
+          </div>
+        </Show>
+        <Show when={!isBusy() && commitError() && commitBusy() === null}>
+          <div class="flex items-center gap-2">
+            <span class="text-[10px] text-red-400/80 truncate max-w-[200px]">{commitError()}</span>
+            <button
+              onClick={start}
+              class="text-[10px] text-sky-400/80 hover:text-sky-300 transition-colors shrink-0"
+            >
+              retry
+            </button>
+          </div>
+        </Show>
+      </div>
+    );
+  }
+
   function RepoCard(props: { repo: RepoInfo }) {
     const repo = () => props.repo;
     const isSelected = () => selectedRepo() === repo().path;
@@ -410,6 +521,11 @@ export default function App() {
                 </Show>
               </div>
             </Show>
+            <Show when={!repo().status.error && (repo().status.staged > 0 || repo().status.unstaged > 0 || repo().status.untracked > 0)}>
+              <div class="flex items-center gap-2 mt-2 pt-2 border-t border-zinc-800/30">
+                <CommitButton repoPath={repo().path} />
+              </div>
+            </Show>
           </div>
         </Show>
       </div>
@@ -475,6 +591,45 @@ export default function App() {
                 </button>
               </Show>
             </Show>
+            <div class="relative">
+              <button
+                onClick={() => { setShowSettings(!showSettings()); if (!showSettings()) setModelDraft(config().opencodeModel); }}
+                class="px-2 py-1.5 bg-zinc-900 hover:bg-zinc-800 border border-zinc-800 rounded-lg text-zinc-500 hover:text-zinc-300 transition-colors"
+              >
+                <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.066 2.573c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.573 1.066c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.066-2.573c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" />
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+                </svg>
+              </button>
+              <Show when={showSettings()}>
+                <>
+                  <div class="fixed inset-0 z-10" onClick={() => setShowSettings(false)} />
+                  <div class="absolute right-0 top-full mt-1 z-20 w-72 bg-zinc-900 border border-zinc-800 rounded-lg shadow-xl p-3">
+                    <div class="text-[11px] font-medium text-zinc-400 mb-2 uppercase tracking-wider">OpenCode Model</div>
+                    <input
+                      value={modelDraft()}
+                      onInput={(e) => setModelDraft(e.currentTarget.value)}
+                      placeholder="provider/model"
+                      class="w-full bg-zinc-800 border border-zinc-700 rounded px-2 py-1.5 text-[12px] text-zinc-300 focus:outline-none focus:border-zinc-500 mb-2"
+                    />
+                    <div class="flex items-center justify-between">
+                      <span class="text-[10px] text-zinc-600">e.g. CrofAI/deepseek-v4-flash</span>
+                      <button
+                        onClick={async () => {
+                          const newConfig = { opencodeModel: modelDraft() || "CrofAI/deepseek-v4-flash" };
+                          await window.electronAPI.setConfig(newConfig);
+                          setConfig(newConfig);
+                          setShowSettings(false);
+                        }}
+                        class="px-2.5 py-1 bg-sky-600/80 hover:bg-sky-500 rounded text-[11px] font-medium transition-colors"
+                      >
+                        Save
+                      </button>
+                    </div>
+                  </div>
+                </>
+              </Show>
+            </div>
           </div>
         </div>
 
