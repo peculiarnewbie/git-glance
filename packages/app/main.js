@@ -102,6 +102,19 @@ function execGitSafe(cmd, cwd, timeout) {
   });
 }
 
+function execAsync(cmd, options = {}) {
+  return new Promise((resolve, reject) => {
+    const child = exec(cmd, options, (err, stdout, stderr) => {
+      if (err) reject(Object.assign(err, { stderr: stderr?.toString() }));
+      else resolve(stdout?.toString().trim() ?? "");
+    });
+    if (options.stdin != null) {
+      child.stdin.write(options.stdin);
+      child.stdin.end();
+    }
+  });
+}
+
 async function getGitStatusAsync(repoPath) {
   try {
     const [rawStatus, branch, remote] = await Promise.all([
@@ -263,21 +276,13 @@ ipcMain.on("commit-and-push", async (event, repoPath) => {
 
   try {
     send("staging");
-    execSync("git add .", { cwd: repoPath, timeout: 15000, encoding: "utf-8" });
-
+    await execAsync("git add .", { cwd: repoPath, timeout: 15000 });
     if (cancelCommit) return;
 
-    const branch = execSync("git rev-parse --abbrev-ref HEAD", {
-      cwd: repoPath, timeout: 5000, encoding: "utf-8",
-    }).trim();
+    const branch = await execAsync("git rev-parse --abbrev-ref HEAD", { cwd: repoPath, timeout: 5000 });
 
-    const stagedSummary = execSync("git diff --cached --stat", {
-      cwd: repoPath, timeout: 10000, encoding: "utf-8",
-    }).trim();
-    const stagedPatch = execSync("git diff --cached", {
-      cwd: repoPath, timeout: 10000, encoding: "utf-8",
-      maxBuffer: 50 * 1024 * 1024,
-    }).trim();
+    const stagedSummary = await execAsync("git diff --cached --stat", { cwd: repoPath, timeout: 10000 });
+    const stagedPatch = await execAsync("git diff --cached", { cwd: repoPath, timeout: 10000, maxBuffer: 50 * 1024 * 1024 });
 
     if (!stagedPatch) {
       send("error", { error: "No changes to commit. Stage some changes first." });
@@ -290,12 +295,10 @@ ipcMain.on("commit-and-push", async (event, repoPath) => {
     const prompt = buildCommitMessagePrompt(branch, stagedSummary, stagedPatch);
     const config = loadConfig();
     const model = config.opencodeModel || "CrofAI/deepseek-v4-flash";
-    const opencodeOutput = execSync(`opencode run --format json -m "${model}" --dir "${repoPath}"`, {
-      input: prompt,
-      timeout: 120000,
-      encoding: "utf-8",
-      maxBuffer: 10 * 1024 * 1024,
-    });
+    const opencodeOutput = await execAsync(
+      `opencode run --format json -m "${model}" --dir "${repoPath}"`,
+      { timeout: 120000, maxBuffer: 10 * 1024 * 1024, stdin: prompt },
+    );
 
     if (cancelCommit) return;
 
@@ -334,13 +337,13 @@ ipcMain.on("commit-and-push", async (event, repoPath) => {
     const msgFile = path.join(app.getPath("userData"), "commit-msg.txt");
     const fullMessage = body ? `${subject}\n\n${body}` : subject;
     fs.writeFileSync(msgFile, fullMessage, "utf-8");
-    execSync(`git commit -F "${msgFile}"`, { cwd: repoPath, timeout: 15000, encoding: "utf-8" });
+    await execAsync(`git commit -F "${msgFile}"`, { cwd: repoPath, timeout: 15000 });
     fs.unlinkSync(msgFile);
 
     if (cancelCommit) return;
 
     send("pushing");
-    execSync("git push", { cwd: repoPath, timeout: 60000, encoding: "utf-8" });
+    await execAsync("git push", { cwd: repoPath, timeout: 60000 });
 
     if (cancelCommit) return;
 
