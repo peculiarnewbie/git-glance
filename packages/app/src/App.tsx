@@ -30,6 +30,7 @@ export default function App() {
   const [loading, setLoading] = createSignal(true);
   const [config, setConfig] = createSignal<{ opencodeModel: string }>({ opencodeModel: "CrofAI/deepseek-v4-flash" });
   const [showSettings, setShowSettings] = createSignal(false);
+  const [sidebarCloseForce, setSidebarCloseForce] = createSignal(0);
   const [modelDraft, setModelDraft] = createSignal("");
   const [commitBusy, setCommitBusy] = createSignal<string | null>(null);
   const [commitPhase, setCommitPhase] = createSignal<string>("");
@@ -188,12 +189,18 @@ export default function App() {
     });
   }
 
-  const selectedRepoData = createMemo(() => {
+  function closeSidebar() {
+    setSelectedRepo(null);
+    setSidebarCloseForce(t => t + 1);
+  }
+
+  const selectedRepoData = () => {
+    sidebarCloseForce();
     const sel = selectedRepo();
     const result = repos().find(r => r.path === sel);
     console.log("[debug] selectedRepoData re-eval", { selectedRepo: sel, found: result?.path ?? "undefined", reposLen: repos().length });
     return result;
-  });
+  };
   const hasCached = () => repos().some(r => r.cached);
 
   const listData = createMemo(() => {
@@ -487,16 +494,17 @@ export default function App() {
 
   function Sidebar(props: { repo: RepoInfo }) {
     const repo = () => props.repo;
-    onMount(() => console.log("[debug] Sidebar mounted", repo().path));
-    onCleanup(() => console.log("[debug] Sidebar cleanup", repo().path));
+    const currentPath = repo().path;
+    onMount(() => console.log("[debug] Sidebar mounted", currentPath));
+    onCleanup(() => console.log("[debug] Sidebar cleanup", currentPath));
     return (
       <>
-        <div class="fixed inset-0 z-30" onClick={() => { console.log("[debug] Sidebar backdrop click, calling setSelectedRepo(null)"); setSelectedRepo(null); }} />
+        <div class="fixed inset-0 z-30" onClick={() => { console.log("[debug] Sidebar backdrop click"); closeSidebar(); }} />
         <div class="fixed top-0 right-0 z-40 h-full w-80 bg-[#09090b] border-l border-zinc-800/50 shadow-2xl p-5 overflow-y-auto">
         <div class="flex items-center justify-between mb-4">
           <h2 class="text-sm font-semibold text-zinc-100 truncate">{repo().name}</h2>
           <button
-            onClick={() => { console.log("[debug] Sidebar X click, calling setSelectedRepo(null)"); setSelectedRepo(null); }}
+            onClick={() => { console.log("[debug] Sidebar X click"); closeSidebar(); }}
             class="text-zinc-600 hover:text-zinc-400 transition-colors shrink-0 ml-2"
           >
             <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
