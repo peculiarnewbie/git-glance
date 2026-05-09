@@ -6,7 +6,7 @@ import type { GitServiceShape, GitStatusResult } from "./GitService.js"
 import type { CacheServiceShape } from "./CacheService.js"
 
 export interface ScannerServiceShape {
-  readonly scan: (rootDir: string) => Stream.Stream<ScanProgress>
+  readonly scan: (rootDir: string, machine?: string) => Stream.Stream<ScanProgress>
 }
 
 export const ScannerService = Context.Service<ScannerServiceShape>(
@@ -42,6 +42,7 @@ function findGitRepos(rootDir: string): Array<string> {
 function scanOneRepo(
   repoPath: string,
   git: GitServiceShape,
+  machine: string = "local",
 ): Effect.Effect<GitRepo> {
   return Effect.gen(function* () {
     const status = yield* git.getStatus(repoPath)
@@ -60,6 +61,8 @@ function scanOneRepo(
       weekCommits: status.weekCommits,
       lastScanTime: Date.now(),
       error: null,
+      machine,
+      settings: null,
     })
   }).pipe(
     Effect.catch((e) =>
@@ -79,6 +82,8 @@ function scanOneRepo(
           weekCommits: 0,
           lastScanTime: Date.now(),
           error: String(e),
+          machine,
+          settings: null,
         }),
       ),
     ),
@@ -87,77 +92,92 @@ function scanOneRepo(
 
 // ─── Live implementation ─────────────────────────────────────────────
 
+let canceled = false
+
+export function cancelScan() {
+  canceled = true
+}
+
+export function resetCancel() {
+  canceled = false
+}
+
 export const ScannerServiceLive = (
   git: GitServiceShape,
   cache: CacheServiceShape,
 ): ScannerServiceShape => ({
-  scan: (rootDir) =>
+  scan: (rootDir, machine = "local") =>
     Stream.unwrap(
       Effect.gen(function* () {
-        // 1. Discover repos
         const repoPaths = findGitRepos(rootDir)
         const total = repoPaths.length
-        const concurrency = Math.min(6, total || 1)
 
-        // 2. Create a queue for streaming events during scan
         const queue = yield* Queue.unbounded<ScanProgress>()
 
-        // 3. Emit "discovering" event
         yield* Queue.offer(
           queue,
-          new ScanProgress({
-            phase: "discovering" as const,
-            total,
-            current: 0,
-            repo: null,
-          }),
+          new ScanProgress({ phase: "discovering", total, current: 0, repo: null }),
         )
 
-        // 4. Fork a fiber that scans and feeds the queue
         yield* Effect.forkScoped(
           Effect.gen(function* () {
             const results: Array<GitRepo> = []
 
-            yield* Effect.forEach(
-              repoPaths,
-              (repoPath, index) =>
-                Effect.gen(function* () {
-                  const repo = yield* scanOneRepo(repoPath, git)
-                  results.push(repo)
-                  yield* Queue.offer(
-                    queue,
-                    new ScanProgress({
-                      phase: "scanning" as const,
-                      total,
-                      current: index + 1,
-                      repo,
+            for (let i = 0; i < repoPaths.length; i++) {
+              if (canceled) break
+              const repoPath = repoPaths[i]!
+              const repo = yield* scanOneRepo(repoPath, git, machine).pipe(
+                Effect.timeout(Duration.seconds(30)),
+                Effect.catch((e) =>
+                  Effect.succeed(
+                    new GitRepo({
+                      name: basename(repoPath),
+                      path: repoPath,
+                      branch: null,
+                      hasChanges: false,
+                      staged: 0,
+                      unstaged: 0,
+                      untracked: 0,
+                      ahead: 0,
+                      behind: 0,
+                      remote: null,
+                      lastCommitTime: null,
+                      weekCommits: 0,
+                      lastScanTime: Date.now(),
+                      error: String(e),
+                      machine,
+                      settings: null,
                     }),
-                  )
-                }),
-              { concurrency, discard: true },
-            )
+                  ),
+                ),
+              )
+              results.push(repo)
+              yield* Queue.offer(
+                queue,
+                new ScanProgress({ phase: "scanning", total, current: i + 1, repo }),
+              )
+            }
 
-            // 5. Persist cache
             yield* cache.save(results)
 
-            // 6. Emit "done"
             yield* Queue.offer(
               queue,
-              new ScanProgress({
-                phase: "done" as const,
-                total,
-                current: total,
-                repo: null,
-              }),
+              new ScanProgress({ phase: "done", total, current: results.length, repo: null }),
             )
-
-            // 7. Shut down queue → stream ends naturally
-            yield* Queue.shutdown(queue)
-          }),
+          }).pipe(
+            Effect.catch((e) =>
+              Queue.offer(
+                queue,
+                new ScanProgress({ phase: "done", total, current: 0, repo: null }),
+              )
+            ),
+            Effect.ensuring(Queue.shutdown(queue)),
+          ),
         )
 
-        // 8. Return the stream; scope manages fiber lifecycle
         return Stream.fromQueue(queue)
       }),
     ),
 })
+
+import { Duration } from "effect"

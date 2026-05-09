@@ -2,11 +2,12 @@
   "name": "git-glance",
   "private": true,
   "scripts": {
-    "build": "pnpm -r build",
+    "build": "pnpm --filter @git-glance/app build",
     "dev": "concurrently \"pnpm --filter @git-glance/server dev\" \"pnpm --filter @git-glance/app dev\"",
     "dev:server": "pnpm --filter @git-glance/server dev",
     "dev:tui": "pnpm --filter @git-glance/tui dev",
-    "dev:app": "pnpm --filter @git-glance/app dev"
+    "dev:app": "pnpm --filter @git-glance/app dev",
+    "start": "pnpm --filter @git-glance/server start"
   },
   "devDependencies": {
     "concurrently": "^9.2.1"

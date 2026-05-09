@@ -6,6 +6,12 @@ import { Schema } from "effect"
  * Using branded types at the boundary – path is validated once
  * and trusted downstream.
  */
+export class GitRepoSettings extends Schema.Class<GitRepoSettings>("GitRepoSettings")({
+  skipUntracked: Schema.Boolean,
+  skipPullCheck: Schema.Boolean,
+  hidden: Schema.Boolean,
+}) {}
+
 export class GitRepo extends Schema.Class<GitRepo>("GitRepo")({
   name: Schema.String,
   path: Schema.String,
@@ -21,4 +27,6 @@ export class GitRepo extends Schema.Class<GitRepo>("GitRepo")({
   weekCommits: Schema.Number.pipe(Schema.check(Schema.isGreaterThanOrEqualTo(0))),
   lastScanTime: Schema.NullOr(Schema.Number),
   error: Schema.NullOr(Schema.String),
+  machine: Schema.String,
+  settings: Schema.NullOr(GitRepoSettings),
 }) {}

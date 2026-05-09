@@ -1,14 +1,28 @@
-import { defineConfig } from 'vite';
-import solid from 'vite-plugin-solid';
-import tailwindcss from '@tailwindcss/vite';
+import { defineConfig } from "vite";
+import solid from "vite-plugin-solid";
+import tailwindcss from "@tailwindcss/vite";
 
 export default defineConfig({
-  base: './',
+  base: "./",
   plugins: [solid(), tailwindcss()],
   build: {
-    outDir: 'renderer-dist',
+    outDir: "../server/public",
   },
   server: {
     port: 5173,
+    proxy: {
+      "/health": "http://localhost:3456",
+      "/repos": "http://localhost:3456",
+      "/scan": "http://localhost:3456",
+      "/pull": "http://localhost:3456",
+      "/push": "http://localhost:3456",
+      "/config": "http://localhost:3456",
+      "/commit-push": "http://localhost:3456",
+      "/cancel-commit": "http://localhost:3456",
+      "/cancel-scan": "http://localhost:3456",
+      "/cancel-fetch": "http://localhost:3456",
+      "/fetch": "http://localhost:3456",
+      "/settings": "http://localhost:3456",
+    },
   },
 });

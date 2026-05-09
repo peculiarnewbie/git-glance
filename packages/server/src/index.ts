@@ -1,22 +1,17 @@
 import { Layer } from "effect"
+import { BunHttpServer, BunRuntime } from "@effect/platform-bun"
 import { HttpRouter } from "effect/unstable/http"
-import { NodeHttpServer, NodeRuntime } from "@effect/platform-node"
-import { createServer } from "node:http"
-import { AppLayer } from "./routes.js"
-
-// ─── HTTP server setup ───────────────────────────────────────────────
+import { makeServerLayer } from "./routes.js"
+import { ServerConfigLive } from "./config.js"
 
 const Port = Number.parseInt(process.env["PORT"] ?? "3456", 10)
 
-const ServerLayer = NodeHttpServer.layer(createServer, { port: Port })
+const ServerLayer = BunHttpServer.layer({ port: Port, idleTimeout: 120 })
 
-// ─── Serve ───────────────────────────────────────────────────────────
-
-const program = AppLayer.pipe(
+const program = makeServerLayer.pipe(
   HttpRouter.serve,
+  Layer.provide(ServerConfigLive),
   Layer.provide(ServerLayer),
 )
 
-// ─── Run ─────────────────────────────────────────────────────────────
-
-NodeRuntime.runMain(Layer.launch(program))
+BunRuntime.runMain(Layer.launch(program))

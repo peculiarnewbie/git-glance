@@ -180,13 +180,14 @@ function updateAll() {
       const prefix = repo.error ? "!" : repo.hasChanges ? "~" : "·"
       const arrow = selected ? "▸" : " "
       const branchStr = repo.branch ? ` (${repo.branch})` : ""
+      const machineStr = repo.machine && repo.machine !== "local" ? ` [${repo.machine}]` : ""
       const timeStr = timeAgo(repo.lastCommitTime)
       const remoteStr =
         repo.ahead > 0 && repo.behind > 0 ? ` ⇡${repo.ahead} ⇣${repo.behind}`
         : repo.ahead > 0 ? ` ⇡${repo.ahead}`
         : repo.behind > 0 ? ` ⇣${repo.behind}`
         : ""
-      const line = ` ${arrow} ${prefix} ${repo.name}${branchStr}${remoteStr} ${timeStr}`
+      const line = ` ${arrow} ${prefix} ${repo.name}${machineStr}${branchStr}${remoteStr} ${timeStr}`
       listItems[i].content = line
       listItems[i].color = selected ? "#FFFFFF" : "#CCCCCC"
       listItems[i].backgroundColor = selected ? "#0055AA" : undefined

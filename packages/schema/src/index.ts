@@ -1,3 +1,10 @@
-export { GitRepo } from "./GitRepo.js"
+export { GitRepo, GitRepoSettings } from "./GitRepo.js"
 export { ScanProgress } from "./ScanProgress.js"
-export { ReposResponse } from "./ApiRoutes.js"
+export {
+  ReposResponse,
+  MachineStatus,
+  ServerConfigSchema,
+  PullPushResult,
+  CommitProgress,
+  FetchProgress,
+} from "./ApiRoutes.js"

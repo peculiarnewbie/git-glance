@@ -1,30 +1,8 @@
 import { createSignal, For, Show, createMemo, onMount, onCleanup } from "solid-js";
+import { api, repoDataToInfo } from "./api";
+import type { RepoInfo } from "./api";
 
 type SortKey = "last-commit" | "week-activity" | "name" | "pull-count";
-
-interface GitStatus {
-  branch: string;
-  remote: string | null;
-  hasChanges: boolean;
-  staged: number;
-  unstaged: number;
-  untracked: number;
-  ahead: number;
-  behind: number;
-  lastCommitTime: number | null;
-  weekCommits: number;
-  error?: string;
-}
-
-interface RepoInfo {
-  path: string;
-  name: string;
-  cached: boolean;
-  status: GitStatus;
-  skipUntracked?: boolean;
-  skipPullCheck?: boolean;
-  hidden?: boolean;
-}
 
 function timeAgo(ts: number): string {
   const diff = Date.now() - ts;
@@ -38,30 +16,6 @@ function timeAgo(ts: number): string {
   const weeks = Math.floor(days / 7);
   if (weeks < 8) return `${weeks}w ago`;
   return new Date(ts).toLocaleDateString();
-}
-
-function cacheEntryToRepoInfo([p, d]: [string, any], cached = false): RepoInfo {
-  return {
-    path: p,
-    name: d.name,
-    cached,
-    skipUntracked: d.skipUntracked === true,
-    skipPullCheck: d.skipPullCheck === true,
-    hidden: d.hidden === true,
-    status: {
-      branch: d.branch || "",
-      remote: d.remote || null,
-      hasChanges: !!d.hasChanges,
-      staged: d.staged ?? 0,
-      unstaged: d.unstaged ?? 0,
-      untracked: d.untracked ?? 0,
-      ahead: d.ahead ?? 0,
-      behind: d.behind ?? 0,
-      lastCommitTime: d.lastCommitTime ?? null,
-      weekCommits: d.weekCommits ?? 0,
-      error: d.error || undefined,
-    },
-  };
 }
 
 export default function App() {
@@ -83,10 +37,12 @@ export default function App() {
   const [fetching, setFetching] = createSignal(false);
   const [fetchProgress, setFetchProgress] = createSignal<{ current: number; total: number }>({ current: 0, total: 0 });
   const [fetchCurrentRepo, setFetchCurrentRepo] = createSignal<string>("");
+  const [machineFilter, setMachineFilter] = createSignal<string | null>(null);
+  const [machines, setMachines] = createSignal<{ name: string; online: boolean }[]>([]);
 
-  let removeScanListener: (() => void) | null = null;
-  let removeCommitListener: (() => void) | null = null;
-  let removeFetchListener: (() => void) | null = null;
+  let scanController: AbortController | null = null;
+  let commitController: AbortController | null = null;
+  let fetchController: AbortController | null = null;
   let repoBuffer: RepoInfo[] = [];
   let flushTimer: number | null = null;
 
@@ -115,129 +71,112 @@ export default function App() {
   }
 
   onMount(async () => {
-    const savedConfig = await window.electronAPI.getConfig();
-    if (savedConfig?.opencodeModel) setConfig(savedConfig);
-
-    removeCommitListener = window.electronAPI.onCommitProgress((data) => {
-      if (data.phase === "error") {
-        setCommitError(data.error);
-        setCommitBusy(null);
-        setCommitPhase("");
-      } else if (data.phase === "done") {
-          window.electronAPI.getCache().then((cache) => {
-          setRepos(Object.entries(cache.repos || {}).map((e) => cacheEntryToRepoInfo(e)));
-        });
-        setCommitBusy(null);
-        setCommitPhase("");
-        setCommitError(null);
-      } else {
-        setCommitPhase(data.phase);
-        setCommitError(null);
-      }
-    });
-
-    removeFetchListener = window.electronAPI.onFetchProgress((data) => {
-      if (data.phase === "fetching") {
-        setFetchCurrentRepo(data.repoName || data.repoPath);
-        setFetchProgress({ current: data.current, total: data.total });
-      } else if (data.phase === "repo") {
-        setRepos(prev => {
-          const next = prev.slice();
-          const idx = next.findIndex(r => r.path === data.repoPath);
-          if (idx >= 0) {
-            const old = next[idx];
-            next[idx] = {
-              ...old,
-              cached: false,
-              status: {
-                ...old.status,
-                ahead: data.ahead ?? old.status.ahead,
-                behind: data.behind ?? old.status.behind,
-                branch: data.branch || old.status.branch,
-                error: data.error || old.status.error,
-              },
-            };
-          }
-          return next;
-        });
-        setFetchProgress({ current: data.current, total: data.total });
-      } else if (data.phase === "done") {
-        setFetching(false);
-        setFetchCurrentRepo("");
-      }
-    });
-
-    const savedDir = await window.electronAPI.getSavedDir();
-    if (savedDir) {
-      setDir(savedDir);
-      const cache = await window.electronAPI.getCache();
-      setRepos(Object.entries(cache.repos || {}).map((e) => cacheEntryToRepoInfo(e, true)));
+    const cfg = await api.getConfig();
+    if (cfg) {
+      setConfig({ opencodeModel: cfg.opencodeModel });
+      setMachines((cfg.machines || []).map(m => ({ name: m.name, online: m.online })));
+      if (cfg.rootDir) setDir(cfg.rootDir);
     }
+
+    const data = await api.getRepos();
+    setRepos(data.repos.map(repoDataToInfo));
+    setMachines(data.machines.map(m => ({ name: m.name, online: m.online })));
     setLoading(false);
   });
 
   onCleanup(() => {
-    if (removeScanListener) removeScanListener();
-    if (removeCommitListener) removeCommitListener();
-    if (removeFetchListener) removeFetchListener();
+    scanController?.abort();
+    commitController?.abort();
+    fetchController?.abort();
     if (flushTimer !== null) clearTimeout(flushTimer);
   });
 
   async function handleSelect() {
-    const result = await window.electronAPI.selectDirectory();
+    const result = window.electronAPI?.selectDirectory ? await window.electronAPI.selectDirectory() : null;
+    if (!result && typeof prompt !== "undefined") {
+      const manual = prompt("Enter directory path:");
+      if (manual) {
+        await api.setConfig({ rootDir: manual });
+        setDir(manual);
+        setRepos([]);
+      }
+      return;
+    }
     if (result) {
       setDir(result);
       setRepos([]);
-      await window.electronAPI.saveDir(result);
+      await api.setConfig({ rootDir: result });
     }
   }
 
   function startScan() {
-    if (removeScanListener) removeScanListener();
+    scanController?.abort();
     repoBuffer = [];
     if (flushTimer !== null) { clearTimeout(flushTimer); flushTimer = null; }
     setScanning(true);
     setProgress({ current: 0, total: 0 });
 
-    const cleanup = window.electronAPI.onScanProgress((data) => {
+    const d = dir();
+    if (!d) return;
+
+    scanController = api.subscribeScan(d, (data) => {
       if (data.phase === "discovering") {
         setProgress({ current: 0, total: data.total });
-      } else if (data.phase === "repo") {
+      } else if (data.phase === "scanning") {
         setProgress({ current: data.current, total: data.total });
-        repoBuffer.push({ ...data.repo, cached: false });
-        if (flushTimer === null) {
-          flushTimer = setTimeout(() => {
-            flushTimer = null;
-            flushRepoBuffer();
-          }, 80);
+        if (data.repo) {
+          repoBuffer.push({ ...repoDataToInfo(data.repo), cached: false });
+          if (flushTimer === null) {
+            flushTimer = setTimeout(() => {
+              flushTimer = null;
+              flushRepoBuffer();
+            }, 80);
+          }
         }
       } else if (data.phase === "done") {
         if (flushTimer !== null) { clearTimeout(flushTimer); flushTimer = null; }
         flushRepoBuffer();
         setScanning(false);
-        const allPaths = repos().map(r => r.path);
-        if (allPaths.length > 0) {
-          setFetching(true);
-          setFetchProgress({ current: 0, total: allPaths.length });
-          window.electronAPI.startBackgroundFetch(allPaths);
-        }
+        setFetching(true);
+        setFetchProgress({ current: 0, total: 0 });
+        fetchController?.abort();
+        fetchController = api.subscribeFetch((ev) => {
+          if (ev.phase === "fetching") {
+            setFetchCurrentRepo(ev.repoName || ev.repoPath || "");
+            setFetchProgress({ current: ev.current, total: ev.total });
+          } else if (ev.phase === "repo") {
+            setRepos(prev => {
+              const next = prev.slice();
+              const idx = next.findIndex(r => r.path === ev.repoPath);
+              if (idx >= 0) {
+                next[idx] = { ...next[idx], cached: false, status: { ...next[idx].status, ahead: ev.ahead ?? next[idx].status.ahead, behind: ev.behind ?? next[idx].status.behind, branch: ev.branch || next[idx].status.branch, error: ev.error || next[idx].status.error } };
+              }
+              return next;
+            });
+            setFetchProgress({ current: ev.current, total: ev.total });
+          } else if (ev.phase === "done") {
+            setFetching(false);
+            setFetchCurrentRepo("");
+          }
+        });
       }
+    }, () => {
+      setScanning(false);
+      if (flushTimer !== null) { clearTimeout(flushTimer); flushTimer = null; }
+      flushRepoBuffer();
     });
-    removeScanListener = cleanup;
-
-    const d = dir();
-    if (d) window.electronAPI.startScan(d);
   }
 
   function cancelScan() {
-    window.electronAPI.cancelScan();
+    api.cancelScan();
+    scanController?.abort();
     if (flushTimer !== null) { clearTimeout(flushTimer); flushTimer = null; }
     flushRepoBuffer();
     setScanning(false);
   }
 
   async function updateRepoSettings(repoPath: string, settings: { skipUntracked?: boolean; skipPullCheck?: boolean; hidden?: boolean }) {
-    await window.electronAPI.updateRepoSettings(repoPath, settings);
+    await api.updateRepoSettings(repoPath, settings);
     setRepos(prev => {
       const next = prev.slice();
       const idx = next.findIndex(r => r.path === repoPath);
@@ -252,7 +191,7 @@ export default function App() {
   const hasCached = () => repos().some(r => r.cached);
 
   const listData = createMemo(() => {
-    const all = repos();
+    const all = machineFilter() ? repos().filter(r => r.machine === machineFilter()) : repos();
     const key = sortKey();
     const isGrouped = grouped();
 
@@ -299,17 +238,25 @@ export default function App() {
     };
   });
 
-  function PullButton(props: { repoPath: string; repoName: string; behind: number }) {
+  function PullButton(props: { repoPath: string; repoName: string; behind: number; machine?: string }) {
     const [busy, setBusy] = createSignal(false);
     const [msg, setMsg] = createSignal<string | null>(null);
     async function pull() {
       if (busy()) return;
       setBusy(true);
       setMsg(null);
-      const result = await window.electronAPI.pullRepo(props.repoPath);
+      const result = await api.pullRepo(props.repoPath, props.machine);
       if (result.ok) {
-        const cache = await window.electronAPI.getCache();
-        setRepos(Object.entries(cache.repos || {}).map((e) => cacheEntryToRepoInfo(e)));
+        const data = await api.getRepos();
+        const updated = data.repos.map(repoDataToInfo).find(r => r.path === props.repoPath);
+        if (updated) {
+          setRepos(prev => {
+            const next = prev.slice();
+            const idx = next.findIndex(r => r.path === props.repoPath);
+            if (idx >= 0) next[idx] = updated;
+            return next;
+          });
+        }
       }
       setMsg(result.ok ? `Pulled` : `Failed: ${result.error ?? "unknown"}`);
       setBusy(false);
@@ -329,17 +276,25 @@ export default function App() {
     );
   }
 
-  function PushButton(props: { repoPath: string; repoName: string; ahead: number }) {
+  function PushButton(props: { repoPath: string; repoName: string; ahead: number; machine?: string }) {
     const [busy, setBusy] = createSignal(false);
     const [msg, setMsg] = createSignal<string | null>(null);
     async function push() {
       if (busy()) return;
       setBusy(true);
       setMsg(null);
-      const result = await window.electronAPI.pushRepo(props.repoPath);
+      const result = await api.pushRepo(props.repoPath, props.machine);
       if (result.ok) {
-        const cache = await window.electronAPI.getCache();
-        setRepos(Object.entries(cache.repos || {}).map((e) => cacheEntryToRepoInfo(e)));
+        const data = await api.getRepos();
+        const updated = data.repos.map(repoDataToInfo).find(r => r.path === props.repoPath);
+        if (updated) {
+          setRepos(prev => {
+            const next = prev.slice();
+            const idx = next.findIndex(r => r.path === props.repoPath);
+            if (idx >= 0) next[idx] = updated;
+            return next;
+          });
+        }
       }
       setMsg(result.ok ? `Pushed` : `Failed: ${result.error ?? "unknown"}`);
       setBusy(false);
@@ -362,23 +317,49 @@ export default function App() {
   function CommitButton(props: { repoPath: string }) {
     const isBusy = () => commitBusy() === props.repoPath;
     const phaseLabel = () => {
-      const labels = {
+      const labels: Record<string, string> = {
         staging: "Staging...",
         generating: "Generating message...",
         committing: "Committing...",
         pushing: "Pushing...",
       };
-      return labels[commitPhase() as keyof typeof labels] || "";
+      return labels[commitPhase()] || "";
     };
     function start() {
       if (commitBusy()) return;
       setCommitBusy(props.repoPath);
       setCommitPhase("staging");
       setCommitError(null);
-      window.electronAPI.startCommitAndPush(props.repoPath);
+      commitController?.abort();
+      commitController = api.subscribeCommitPush(props.repoPath, (data) => {
+        if (data.phase === "error") {
+          setCommitError(data.error || "Unknown error");
+          setCommitBusy(null);
+          setCommitPhase("");
+        } else if (data.phase === "done") {
+          api.getRepos().then(d => {
+            const updated = d.repos.map(repoDataToInfo).find(r => r.path === props.repoPath);
+            if (updated) {
+              setRepos(prev => {
+                const next = prev.slice();
+                const idx = next.findIndex(r => r.path === props.repoPath);
+                if (idx >= 0) next[idx] = updated;
+                return next;
+              });
+            }
+          });
+          setCommitBusy(null);
+          setCommitPhase("");
+          setCommitError(null);
+        } else {
+          setCommitPhase(data.phase);
+          setCommitError(null);
+        }
+      });
     }
     function cancel() {
-      window.electronAPI.cancelCommit();
+      api.cancelCommit();
+      commitController?.abort();
       setCommitBusy(null);
       setCommitPhase("");
     }
@@ -427,6 +408,7 @@ export default function App() {
   function RepoCard(props: { repo: RepoInfo }) {
     const repo = () => props.repo;
     const isSelected = () => selectedRepo() === repo().path;
+    const isRemote = () => repo().machine !== "local";
     return (
       <div
         class="border rounded-lg overflow-hidden transition-all duration-150 cursor-pointer"
@@ -452,16 +434,18 @@ export default function App() {
               }}
             />
             <div class="min-w-0">
-              <div class="text-[13px] font-medium truncate leading-tight"
-                classList={{ "text-zinc-200": !repo().cached, "text-zinc-400": repo().cached }}
-              >{repo().name}</div>
+              <div class="flex items-center gap-1.5">
+                <div class="text-[13px] font-medium truncate leading-tight"
+                  classList={{ "text-zinc-200": !repo().cached, "text-zinc-400": repo().cached }}
+                >{repo().name}</div>
+                <Show when={isRemote()}>
+                  <span class="text-[10px] px-1 py-0.5 rounded bg-indigo-500/10 text-indigo-400/70 border border-indigo-500/20 leading-none">{repo().machine}</span>
+                </Show>
+              </div>
               <div class="text-[11px] text-zinc-600 truncate leading-tight mt-px">{repo().path}</div>
             </div>
           </div>
           <div class="flex items-center gap-2.5 shrink-0 ml-4">
-            <Show when={repo().cached}>
-              <span class="text-[10px] text-zinc-700 uppercase tracking-wider">cached</span>
-            </Show>
             <Show when={!repo().status.error}>
               <Show when={repo().status.lastCommitTime}>
                 <span class="text-[11px] text-zinc-600">{timeAgo(repo().status.lastCommitTime!)}</span>
@@ -576,12 +560,18 @@ export default function App() {
             </div>
           </div>
 
+          <Show when={repo().machine !== "local"}>
+            <div class="mb-3 px-2 py-1 rounded text-[11px] bg-indigo-500/10 text-indigo-400/70 border border-indigo-500/20">
+              Machine: {repo().machine}
+            </div>
+          </Show>
+
           <div class="flex flex-wrap items-center gap-2 mb-4">
             <Show when={repo().status.behind > 0}>
-              <PullButton repoPath={repo().path} repoName={repo().name} behind={repo().status.behind} />
+              <PullButton repoPath={repo().path} repoName={repo().name} behind={repo().status.behind} machine={repo().machine !== "local" ? repo().machine : undefined} />
             </Show>
             <Show when={repo().status.ahead > 0}>
-              <PushButton repoPath={repo().path} repoName={repo().name} ahead={repo().status.ahead} />
+              <PushButton repoPath={repo().path} repoName={repo().name} ahead={repo().status.ahead} machine={repo().machine !== "local" ? repo().machine : undefined} />
             </Show>
             <Show when={repo().status.staged > 0 || repo().status.unstaged > 0 || repo().status.untracked > 0}>
               <CommitButton repoPath={repo().path} />
@@ -717,7 +707,7 @@ export default function App() {
                       <button
                         onClick={async () => {
                           const newConfig = { opencodeModel: modelDraft() || "CrofAI/deepseek-v4-flash" };
-                          await window.electronAPI.setConfig(newConfig);
+                          await api.setConfig(newConfig);
                           setConfig(newConfig);
                           setShowSettings(false);
                         }}
@@ -733,11 +723,36 @@ export default function App() {
           </div>
         </div>
 
+        <Show when={machines().length > 0}>
+          <div class="flex items-center gap-1 mb-3">
+            <button onClick={() => setMachineFilter(null)}
+              class="text-[11px] px-2 py-1 rounded transition-colors"
+              classList={{ "bg-zinc-800 text-zinc-300": machineFilter() === null, "text-zinc-600 hover:text-zinc-400": machineFilter() !== null }}
+            >All</button>
+            <span class="text-zinc-800">·</span>
+            <Show when={repos().some(r => r.machine === "local")}>
+              <button onClick={() => setMachineFilter("local")}
+                class="text-[11px] px-2 py-1 rounded transition-colors"
+                classList={{ "bg-zinc-800 text-zinc-300": machineFilter() === "local", "text-zinc-600 hover:text-zinc-400": machineFilter() !== "local" }}
+              >Local</button>
+            </Show>
+            <For each={machines()}>{(m) =>
+              <button onClick={() => setMachineFilter(m.name)}
+                class="text-[11px] px-2 py-1 rounded transition-colors flex items-center gap-1"
+                classList={{ "bg-zinc-800 text-zinc-300": machineFilter() === m.name, "text-zinc-600 hover:text-zinc-400": machineFilter() !== m.name }}
+              >
+                <span classList={{ "text-emerald-400/60": m.online, "text-red-400/60": !m.online }}>●</span>
+                {m.name}
+              </button>
+            }</For>
+          </div>
+        </Show>
+
         <Show when={dir()}>
           <div class="text-[11px] text-zinc-700 mb-3 truncate flex items-center gap-2">
             <span class="truncate">{dir()}</span>
-            <Show when={!loading() && hasCached() && !scanning()}>
-              <span class="text-zinc-700 shrink-0">· cached</span>
+            <Show when={!loading() && !scanning()}>
+              <span class="text-zinc-700 shrink-0">· {repos().length} repos</span>
             </Show>
           </div>
         </Show>
@@ -751,7 +766,7 @@ export default function App() {
             <div class="h-1 bg-zinc-800 rounded-full overflow-hidden">
               <div
                 class="h-full bg-amber-500/60 rounded-full transition-all duration-300 ease-out"
-                style={{ width: `${(progress().current / progress().total) * 100}%` }}
+                style={{ width: ((progress().current / progress().total) * 100) + "%" }}
               />
             </div>
           </div>
@@ -769,7 +784,7 @@ export default function App() {
             <div class="h-1 bg-zinc-800 rounded-full overflow-hidden">
               <div
                 class="h-full bg-sky-500/60 rounded-full transition-all duration-300 ease-out"
-                style={{ width: `${(fetchProgress().current / fetchProgress().total) * 100}%` }}
+                style={{ width: ((fetchProgress().current / fetchProgress().total) * 100) + "%" }}
               />
             </div>
             <Show when={fetchCurrentRepo()}>

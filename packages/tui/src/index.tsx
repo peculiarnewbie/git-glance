@@ -246,6 +246,9 @@ function App() {
                   <text fg={selected ? "#FFFFFF" : undefined} bold={selected}>
                     {repo.name}{" "}
                   </text>
+                  <text fg={repo.machine && repo.machine !== "local" ? "#8888FF" : undefined}>
+                    {repo.machine && repo.machine !== "local" ? `[${repo.machine}]` : ""}{" "}
+                  </text>
                   <text fg={selected ? "#AADDFF" : "#666666"}>
                     {repo.branch ? `(${repo.branch})` : ""}{" "}
                   </text>
