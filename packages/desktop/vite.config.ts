@@ -5,9 +5,6 @@ import tailwindcss from "@tailwindcss/vite";
 export default defineConfig({
   base: "./",
   plugins: [solid(), tailwindcss()],
-  build: {
-    outDir: "../server/public",
-  },
   server: {
     port: 5173,
     proxy: {

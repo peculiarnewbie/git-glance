@@ -26,6 +26,7 @@ export const ServerConfigLive = Layer.effect(
   Effect.gen(function* () {
     const port = Number.parseInt(process.env["PORT"] ?? String(DEFAULT_PORT), 10)
     const host = process.env["HOST"] || undefined
+    const staticDir = process.env["STATIC_DIR"] || undefined
     const devUrl = process.env["DEV_URL"] || undefined
     const opencodeModel = process.env["OPENCODE_MODEL"] || "CrofAI/deepseek-v4-flash"
     const configDir = process.env["CONFIG_DIR"] || join(homedir(), ".git-glance")
@@ -34,7 +35,7 @@ export const ServerConfigLive = Layer.effect(
       port,
       host,
       rootDir: undefined,
-      staticDir: undefined,
+      staticDir,
       devUrl,
       opencodeModel,
       machines: [],
@@ -48,7 +49,7 @@ export const resolveStaticDir = Effect.sync(() => {
   const bundled = resolve(join(import.meta.dirname, "../public"))
   if (existsSync(join(bundled, "index.html"))) return bundled
 
-  const monorepo = resolve(join(import.meta.dirname, "../../app/renderer-dist"))
+  const monorepo = resolve(join(import.meta.dirname, "../../desktop/renderer-dist"))
   if (existsSync(join(monorepo, "index.html"))) return monorepo
 
   return undefined

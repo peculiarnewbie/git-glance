@@ -1,12 +1,13 @@
 {
-  "name": "@git-glance/app",
-  "version": "0.0.1",
+  "name": "@git-glance/desktop",
+  "version": "0.1.0",
   "private": true,
   "type": "module",
-  "main": "main.js",
   "scripts": {
-    "dev": "concurrently \"vite\" \"electron .\"",
+    "dev": "vite",
     "build": "vite build",
+    "build:css": "tailwindcss -i ./src/index.css -o ./views/mainview/index.css",
+    "build:desktop": "bun run build:css && electrobun build --env=stable",
     "preview": "vite preview"
   },
   "dependencies": {
@@ -14,10 +15,11 @@
   },
   "devDependencies": {
     "@tailwindcss/vite": "^4.1.6",
-    "concurrently": "^9.2.1",
-    "electron": "^41.5.0",
     "tailwindcss": "^4.1.6",
     "vite": "^8.0.10",
     "vite-plugin-solid": "^2.11.12"
+  },
+  "optionalDependencies": {
+    "electrobun": "^0.1.0"
   }
 }

@@ -93,7 +93,14 @@ export default function App() {
   });
 
   async function handleSelect() {
-    const result = window.electronAPI?.selectDirectory ? await window.electronAPI.selectDirectory() : null;
+    let result: string | null = null;
+    try {
+      const { Electroview } = await import("electrobun/view");
+      const ev = new Electroview({});
+      result = (await ev.rpc.request.selectDirectory()) as string | null;
+    } catch {
+      // Fallback: running in browser (Vite dev) — use prompt
+    }
     if (!result && typeof prompt !== "undefined") {
       const manual = prompt("Enter directory path:");
       if (manual) {

@@ -2,11 +2,13 @@
   "name": "git-glance",
   "private": true,
   "scripts": {
-    "build": "pnpm --filter @git-glance/app build",
-    "dev": "concurrently \"pnpm --filter @git-glance/server dev\" \"pnpm --filter @git-glance/app dev\"",
+    "build:serve": "bun build --compile ./packages/server/src/index.ts --outfile=dist/git-glance-serve",
+    "build:tui": "bun build --compile ./packages/tui/src/index.ts --outfile=dist/git-glance-tui",
+    "build:desktop": "cd packages/desktop && electrobun build --env=stable",
+    "dist": "pnpm build:serve && pnpm build:desktop",
+    "dev": "concurrently \"pnpm --filter @git-glance/server dev\" \"pnpm --filter @git-glance/desktop dev\"",
     "dev:server": "pnpm --filter @git-glance/server dev",
     "dev:tui": "pnpm --filter @git-glance/tui dev",
-    "dev:app": "pnpm --filter @git-glance/app dev",
     "start": "pnpm --filter @git-glance/server start"
   },
   "devDependencies": {
@@ -15,7 +17,6 @@
   "packageManager": "pnpm@10.33.2",
   "pnpm": {
     "onlyBuiltDependencies": [
-      "electron",
       "esbuild"
     ]
   }
