@@ -387,7 +387,7 @@ function updateRepoInCache(repo: string) {
 function commitPushStream(repo: string): Stream.Stream<Uint8Array> {
   return Stream.unwrap(
     Effect.gen(function* () {
-      const queue = yield* effectQueueUnbounded<CommitProgress>()
+      const queue = yield* effectQueueUnbounded<CommitProgress | null>()
 
       yield* Effect.forkScoped(
         Effect.gen(function* () {
@@ -443,14 +443,14 @@ function commitPushStream(repo: string): Stream.Stream<Uint8Array> {
           } catch (err) {
             yield* send("error", { error: String(err) })
           } finally {
-            yield* Queue.shutdown(queue)
+            yield* Queue.offer(queue, null)
           }
         }),
       )
 
       return Stream.fromQueue(queue).pipe(
+        Stream.takeWhile((e): e is CommitProgress => e !== null),
         Stream.map((e) => new TextEncoder().encode(formatSSE(e))),
-        Stream.catchCause(() => Stream.empty),
       )
     }),
   )
@@ -459,7 +459,7 @@ function commitPushStream(repo: string): Stream.Stream<Uint8Array> {
 function backgroundFetchStream(): Stream.Stream<Uint8Array> {
   return Stream.unwrap(
     Effect.gen(function* () {
-      const queue = yield* effectQueueUnbounded<FetchProgress>()
+      const queue = yield* effectQueueUnbounded<FetchProgress | null>()
 
       yield* Effect.forkScoped(
         Effect.gen(function* () {
@@ -510,12 +510,14 @@ function backgroundFetchStream(): Stream.Stream<Uint8Array> {
             queue,
             new FetchProgress({ phase: "done", repoPath: null, repoName: null, current: completed, total, ahead: null, behind: null, branch: null, error: null }),
           )
-        }).pipe(Effect.ensuring(Queue.shutdown(queue))),
+
+          yield* Queue.offer(queue, null)
+        }),
       )
 
       return Stream.fromQueue(queue).pipe(
+        Stream.takeWhile((e): e is FetchProgress => e !== null),
         Stream.map((e) => new TextEncoder().encode(formatSSE(e))),
-        Stream.catch(() => Stream.empty),
       )
     }),
   )

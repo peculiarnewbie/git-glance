@@ -47,7 +47,7 @@ function execGit(
     const timeout = options?.timeout ?? 10_000
     const child = exec(
       `git ${args}`,
-      { cwd: repoPath, timeout, maxBuffer: 10 * 1024 * 1024 },
+      { cwd: repoPath, timeout, maxBuffer: 10 * 1024 * 1024, env: { ...process.env, GIT_TERMINAL_PROMPT: "0" } },
       (err, stdout) => {
         if (err) {
           resume(
