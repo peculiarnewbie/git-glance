@@ -145,6 +145,7 @@ export default function App() {
             setFetchCurrentRepo(ev.repoName || ev.repoPath || "");
             setFetchProgress({ current: ev.current, total: ev.total });
           } else if (ev.phase === "repo") {
+            console.log("[debug] Fetch SSE repo event", { path: ev.repoPath, ahead: ev.ahead, behind: ev.behind, current: ev.current, total: ev.total });
             setRepos(prev => {
               const next = prev.slice();
               const idx = next.findIndex(r => r.path === ev.repoPath);
@@ -187,7 +188,12 @@ export default function App() {
     });
   }
 
-  const selectedRepoData = () => repos().find(r => r.path === selectedRepo());
+  const selectedRepoData = createMemo(() => {
+    const sel = selectedRepo();
+    const result = repos().find(r => r.path === sel);
+    console.log("[debug] selectedRepoData re-eval", { selectedRepo: sel, found: result?.path ?? "undefined", reposLen: repos().length });
+    return result;
+  });
   const hasCached = () => repos().some(r => r.cached);
 
   const listData = createMemo(() => {
@@ -246,9 +252,12 @@ export default function App() {
       setBusy(true);
       setMsg(null);
       const result = await api.pullRepo(props.repoPath, props.machine);
+      console.log("[debug] PullButton pull result", result);
       if (result.ok) {
         const data = await api.getRepos();
+        console.log("[debug] PullButton gotRepos", { count: data.repos.length, paths: data.repos.map(r => r.path) });
         const updated = data.repos.map(repoDataToInfo).find(r => r.path === props.repoPath);
+        console.log("[debug] PullButton updated found", !!updated);
         if (updated) {
           setRepos(prev => {
             const next = prev.slice();
@@ -258,8 +267,10 @@ export default function App() {
           });
         }
       }
+      console.log("[debug] PullButton setMsg/busy before");
       setMsg(result.ok ? `Pulled` : `Failed: ${result.error ?? "unknown"}`);
       setBusy(false);
+      console.log("[debug] PullButton setMsg/busy done");
     }
     return (
       <button
@@ -476,14 +487,16 @@ export default function App() {
 
   function Sidebar(props: { repo: RepoInfo }) {
     const repo = () => props.repo;
+    onMount(() => console.log("[debug] Sidebar mounted", repo().path));
+    onCleanup(() => console.log("[debug] Sidebar cleanup", repo().path));
     return (
       <>
-        <div class="fixed inset-0 z-30" onClick={() => setSelectedRepo(null)} />
+        <div class="fixed inset-0 z-30" onClick={() => { console.log("[debug] Sidebar backdrop click, calling setSelectedRepo(null)"); setSelectedRepo(null); }} />
         <div class="fixed top-0 right-0 z-40 h-full w-80 bg-[#09090b] border-l border-zinc-800/50 shadow-2xl p-5 overflow-y-auto">
         <div class="flex items-center justify-between mb-4">
           <h2 class="text-sm font-semibold text-zinc-100 truncate">{repo().name}</h2>
           <button
-            onClick={() => setSelectedRepo(null)}
+            onClick={() => { console.log("[debug] Sidebar X click, calling setSelectedRepo(null)"); setSelectedRepo(null); }}
             class="text-zinc-600 hover:text-zinc-400 transition-colors shrink-0 ml-2"
           >
             <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
