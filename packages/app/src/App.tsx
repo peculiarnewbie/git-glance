@@ -505,7 +505,7 @@ export default function App() {
           <h2 class="text-sm font-semibold text-zinc-100 truncate">{repo().name}</h2>
           <button
             onClick={() => { console.log("[debug] Sidebar X click"); closeSidebar(); }}
-            class="text-zinc-600 hover:text-zinc-400 transition-colors shrink-0 ml-2"
+            class="text-zinc-600 hover:text-zinc-400 transition-colors shrink-0 ml-2 p-1.5"
           >
             <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
               <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
