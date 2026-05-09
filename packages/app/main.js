@@ -1,4 +1,4 @@
-import { app, BrowserWindow, ipcMain, dialog } from "electron";
+import { app, BrowserWindow, ipcMain, dialog, session } from "electron";
 import path from "path";
 import { fileURLToPath } from "url";
 
@@ -53,6 +53,17 @@ function createMainWindow() {
       });
     }
   });
+
+  session.defaultSession.webRequest.onHeadersReceived((details, callback) => {
+    callback({
+      responseHeaders: {
+        ...details.responseHeaders,
+        "Content-Security-Policy": [
+          "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; connect-src 'self' http://localhost:* ws://localhost:*; img-src 'self' data:; font-src 'self'",
+        ],
+      },
+    })
+  })
 
   mainWindow.on("closed", () => { mainWindow = null; });
 }

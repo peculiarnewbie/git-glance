@@ -229,9 +229,9 @@ const apiRoutes = HttpRouter.use(
           }),
       )
 
-      // ── POST /commit-push?repo=X (SSE) ───────────────────────────
+      // ── GET /commit-push?repo=X (SSE) ────────────────────────────
       yield* router.add(
-        "POST",
+        "GET",
         "/commit-push",
         (req: HttpServerRequest.HttpServerRequest) =>
           Effect.gen(function* () {
@@ -450,7 +450,7 @@ function commitPushStream(repo: string): Stream.Stream<Uint8Array> {
 
       return Stream.fromQueue(queue).pipe(
         Stream.map((e) => new TextEncoder().encode(formatSSE(e))),
-        Stream.catch(() => Stream.empty),
+        Stream.catchCause(() => Stream.empty),
       )
     }),
   )
