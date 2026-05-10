@@ -1,6 +1,6 @@
 import { BrowserWindow, BrowserView, ApplicationMenu } from "electrobun/bun"
 import { Utils, Events } from "electrobun/bun"
-import type { RPCSchema } from "electrobun/bun"
+import type { DesktopRPC } from "../shared/types"
 import { join } from "node:path"
 import { existsSync } from "node:fs"
 
@@ -16,19 +16,6 @@ ApplicationMenu.setApplicationMenu([
     ],
   },
 ])
-
-type DesktopRPC = {
-  bun: RPCSchema<{
-    requests: {
-      selectDirectory: { params: {}; response: string | null }
-    }
-    messages: {}
-  }>
-  webview: RPCSchema<{
-    requests: {}
-    messages: {}
-  }>
-}
 
 const rpc = BrowserView.defineRPC<DesktopRPC>({
   handlers: {

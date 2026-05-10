@@ -72,7 +72,7 @@ export const api = {
     return res.json()
   },
 
-  setConfig: async (config: { rootDir?: string; opencodeModel?: string }): Promise<void> => {
+  setConfig: async (config: { rootDir?: string; opencodeModel?: string; machines?: { name: string; url: string }[] }): Promise<void> => {
     await fetch(`${BASE}/config`, {
       method: "PUT",
       headers: { "Content-Type": "application/json" },

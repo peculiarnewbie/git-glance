@@ -28,7 +28,7 @@ export default function App() {
   const [grouped, setGrouped] = createSignal(true);
   const [collapsed, setCollapsed] = createSignal<Set<string>>(new Set(["Hidden"]));
   const [loading, setLoading] = createSignal(true);
-  const [config, setConfig] = createSignal<{ opencodeModel: string }>({ opencodeModel: "CrofAI/deepseek-v4-flash" });
+  const [config, setConfig] = createSignal<{ opencodeModel: string; machines?: { name: string; url: string }[] }>({ opencodeModel: "CrofAI/deepseek-v4-flash" });
   const [showSettings, setShowSettings] = createSignal(false);
   const [sidebarCloseForce, setSidebarCloseForce] = createSignal(0);
   const [modelDraft, setModelDraft] = createSignal("");
@@ -39,7 +39,9 @@ export default function App() {
   const [fetchProgress, setFetchProgress] = createSignal<{ current: number; total: number }>({ current: 0, total: 0 });
   const [fetchCurrentRepo, setFetchCurrentRepo] = createSignal<string>("");
   const [machineFilter, setMachineFilter] = createSignal<string | null>(null);
-  const [machines, setMachines] = createSignal<{ name: string; online: boolean }[]>([]);
+  const [machines, setMachines] = createSignal<{ name: string; url: string; online: boolean }[]>([]);
+  const [machineNameDraft, setMachineNameDraft] = createSignal("");
+  const [machineUrlDraft, setMachineUrlDraft] = createSignal("");
 
   let scanController: AbortController | null = null;
   let commitController: AbortController | null = null;
@@ -74,14 +76,14 @@ export default function App() {
   onMount(async () => {
     const cfg = await api.getConfig();
     if (cfg) {
-      setConfig({ opencodeModel: cfg.opencodeModel });
-      setMachines((cfg.machines || []).map(m => ({ name: m.name, online: m.online })));
+      setConfig({ opencodeModel: cfg.opencodeModel, machines: cfg.machines?.map(m => ({ name: m.name, url: m.url })) });
+      setMachines((cfg.machines || []).map(m => ({ name: m.name, url: m.url, online: m.online })));
       if (cfg.rootDir) setDir(cfg.rootDir);
     }
 
     const data = await api.getRepos();
     setRepos(data.repos.map(repoDataToInfo));
-    setMachines(data.machines.map(m => ({ name: m.name, online: m.online })));
+    setMachines(data.machines.map(m => ({ name: m.name, url: m.url, online: m.online })));
     setLoading(false);
   });
 
@@ -722,7 +724,7 @@ export default function App() {
               <Show when={showSettings()}>
                 <>
                   <div class="fixed inset-0 z-10" onClick={() => setShowSettings(false)} />
-                  <div class="absolute right-0 top-full mt-1 z-20 w-72 bg-zinc-900 border border-zinc-800 rounded-lg shadow-xl p-3">
+                  <div class="absolute right-0 top-full mt-1 z-20 w-80 bg-zinc-900 border border-zinc-800 rounded-lg shadow-xl p-3 max-h-[80vh] overflow-y-auto">
                     <div class="text-[11px] font-medium text-zinc-400 mb-2 uppercase tracking-wider">OpenCode Model</div>
                     <input
                       value={modelDraft()}
@@ -730,11 +732,11 @@ export default function App() {
                       placeholder="provider/model"
                       class="w-full bg-zinc-800 border border-zinc-700 rounded px-2 py-1.5 text-[12px] text-zinc-300 focus:outline-none focus:border-zinc-500 mb-2"
                     />
-                    <div class="flex items-center justify-between">
+                    <div class="flex items-center justify-between mb-4">
                       <span class="text-[10px] text-zinc-600">e.g. CrofAI/deepseek-v4-flash</span>
                       <button
                         onClick={async () => {
-                          const newConfig = { opencodeModel: modelDraft() || "CrofAI/deepseek-v4-flash" };
+                          const newConfig = { opencodeModel: modelDraft() || "CrofAI/deepseek-v4-flash", machines: config().machines };
                           await api.setConfig(newConfig);
                           setConfig(newConfig);
                           setShowSettings(false);
@@ -743,6 +745,59 @@ export default function App() {
                       >
                         Save
                       </button>
+                    </div>
+
+                    <div class="border-t border-zinc-800 pt-3 mb-2">
+                      <div class="text-[11px] font-medium text-zinc-400 mb-2 uppercase tracking-wider">Remote Machines</div>
+                      <For each={config().machines ?? []}>{(m) =>
+                        <div class="flex items-center justify-between py-1.5 px-2 bg-zinc-800/50 rounded mb-1">
+                          <div class="flex items-center gap-2 min-w-0">
+                            <span class="text-[10px] text-emerald-400/60 shrink-0">●</span>
+                            <span class="text-[12px] text-zinc-300 truncate">{m.name}</span>
+                            <span class="text-[10px] text-zinc-600 truncate hidden sm:block">{m.url}</span>
+                          </div>
+                          <button
+                            onClick={async () => {
+                              const updated = (config().machines ?? []).filter(x => x.name !== m.name)
+                              const newConfig = { opencodeModel: config().opencodeModel, machines: updated }
+                              await api.setConfig(newConfig)
+                              setConfig(newConfig)
+                              setMachines(updated.map(x => ({ ...x, online: machines().find(m2 => m2.name === x.name)?.online ?? false })))
+                            }}
+                            class="text-zinc-600 hover:text-red-400 text-[14px] leading-none ml-2 shrink-0"
+                          >×</button>
+                        </div>
+                      }</For>
+
+                      <div class="flex items-center gap-1 mt-2">
+                        <input
+                          value={machineNameDraft()}
+                          onInput={(e) => setMachineNameDraft(e.currentTarget.value)}
+                          placeholder="name"
+                          class="flex-1 bg-zinc-800 border border-zinc-700 rounded px-2 py-1.5 text-[11px] text-zinc-300 focus:outline-none focus:border-zinc-500 min-w-0"
+                        />
+                        <input
+                          value={machineUrlDraft()}
+                          onInput={(e) => setMachineUrlDraft(e.currentTarget.value)}
+                          placeholder="http://host:3456"
+                          class="flex-1 bg-zinc-800 border border-zinc-700 rounded px-2 py-1.5 text-[11px] text-zinc-300 focus:outline-none focus:border-zinc-500 min-w-0"
+                        />
+                        <button
+                          onClick={async () => {
+                            const name = machineNameDraft().trim()
+                            const url = machineUrlDraft().trim()
+                            if (!name || !url) return
+                            const updated = [...(config().machines ?? []), { name, url }]
+                            const newConfig = { opencodeModel: config().opencodeModel, machines: updated }
+                            await api.setConfig(newConfig)
+                            setConfig(newConfig)
+                            setMachines(updated.map(x => ({ ...x, online: machines().find(m2 => m2.name === x.name)?.online ?? false })))
+                            setMachineNameDraft("")
+                            setMachineUrlDraft("")
+                          }}
+                          class="px-2 py-1.5 bg-zinc-700 hover:bg-zinc-600 rounded text-[11px] font-medium transition-colors shrink-0"
+                        >+</button>
+                      </div>
                     </div>
                   </div>
                 </>
