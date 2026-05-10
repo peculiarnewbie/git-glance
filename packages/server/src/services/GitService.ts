@@ -88,7 +88,7 @@ function getStatus(
       execGit("status --porcelain", repoPath, { timeout: 10_000 }),
       execGit("rev-parse --abbrev-ref HEAD", repoPath, { timeout: 5_000 }),
       safeExec(
-        "rev-parse --abbrev-ref --symbolic-full-name @{upstream} 2>/dev/null",
+        "rev-parse --abbrev-ref --symbolic-full-name @{upstream}",
         repoPath,
         { timeout: 5_000 },
       ),

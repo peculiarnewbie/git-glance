@@ -42,6 +42,9 @@ export default function App() {
   const [machines, setMachines] = createSignal<{ name: string; url: string; online: boolean }[]>([]);
   const [machineNameDraft, setMachineNameDraft] = createSignal("");
   const [machineUrlDraft, setMachineUrlDraft] = createSignal("");
+  const [showDirModal, setShowDirModal] = createSignal(false);
+  const [dirInputValue, setDirInputValue] = createSignal("");
+  const [dirInputError, setDirInputError] = createSignal<string | null>(null);
 
   let scanController: AbortController | null = null;
   let commitController: AbortController | null = null;
@@ -101,15 +104,12 @@ export default function App() {
       const ev = new Electroview({});
       result = (await ev.rpc.request.selectDirectory()) as string | null;
     } catch {
-      // Fallback: running in browser (Vite dev) — use prompt
+      // Fallback: running in browser (Vite dev) — show modal
     }
-    if (!result && typeof prompt !== "undefined") {
-      const manual = prompt("Enter directory path:");
-      if (manual) {
-        await api.setConfig({ rootDir: manual });
-        setDir(manual);
-        setRepos([]);
-      }
+    if (!result) {
+      setDirInputValue(dir() || "");
+      setDirInputError(null);
+      setShowDirModal(true);
       return;
     }
     if (result) {
@@ -117,6 +117,18 @@ export default function App() {
       setRepos([]);
       await api.setConfig({ rootDir: result });
     }
+  }
+
+  async function submitDirInput() {
+    const path = dirInputValue().trim();
+    if (!path) {
+      setDirInputError("Directory path cannot be empty.");
+      return;
+    }
+    setShowDirModal(false);
+    setDir(path);
+    setRepos([]);
+    await api.setConfig({ rootDir: path });
   }
 
   function startScan() {
@@ -981,6 +993,41 @@ export default function App() {
 
       <Show when={selectedRepoData()}>
         <Sidebar repo={selectedRepoData()!} />
+      </Show>
+
+      <Show when={showDirModal()}>
+        <div class="fixed inset-0 z-50 flex items-center justify-center p-6">
+          <div class="fixed inset-0 bg-black/60" onClick={() => setShowDirModal(false)} />
+          <div class="relative z-10 w-full max-w-md bg-zinc-900 border border-zinc-800 rounded-xl shadow-2xl p-5">
+            <h2 class="text-sm font-semibold text-zinc-100 tracking-tight mb-1">Select Directory</h2>
+            <p class="text-[11px] text-zinc-500 mb-3">Enter the full path of a directory to scan for git repositories.</p>
+            <input
+              ref={(el) => { setTimeout(() => el.focus(), 0); }}
+              value={dirInputValue()}
+              onInput={(e) => { setDirInputValue(e.currentTarget.value); setDirInputError(null); }}
+              onKeyDown={(e) => { if (e.key === "Enter") submitDirInput(); }}
+              placeholder="e.g. C:\Users\Ryzen\projects"
+              class="w-full bg-zinc-800 border border-zinc-700 rounded-lg px-3 py-2 text-[12px] text-zinc-300 focus:outline-none focus:border-zinc-500 placeholder:text-zinc-600"
+            />
+            <Show when={dirInputError()}>
+              <p class="text-[11px] text-red-400/80 mt-1.5">{dirInputError()}</p>
+            </Show>
+            <div class="flex items-center justify-end gap-2 mt-3">
+              <button
+                onClick={() => setShowDirModal(false)}
+                class="px-3 py-1.5 bg-zinc-800 hover:bg-zinc-700 border border-zinc-700 rounded-lg text-[11px] font-medium text-zinc-400 transition-colors"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={submitDirInput}
+                class="px-3 py-1.5 bg-amber-600/90 hover:bg-amber-500 rounded-lg text-[11px] font-medium transition-colors"
+              >
+                Select
+              </button>
+            </div>
+          </div>
+        </div>
       </Show>
     </div>
   );
