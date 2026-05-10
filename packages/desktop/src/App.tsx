@@ -18,6 +18,92 @@ function timeAgo(ts: number): string {
   return new Date(ts).toLocaleDateString();
 }
 
+function PullButton(props: { repoPath: string; repoName: string; behind: number; machine?: string; onRefresh: (repoPath: string) => Promise<void> }) {
+  const [busy, setBusy] = createSignal(false);
+  const [msg, setMsg] = createSignal<string | null>(null);
+  async function pull() {
+    if (busy()) return;
+    setBusy(true);
+    setMsg(null);
+    const result = await api.pullRepo(props.repoPath, props.machine);
+    if (result.ok) await props.onRefresh(props.repoPath);
+    setMsg(result.ok ? `Pulled` : `Failed: ${result.error ?? "unknown"}`);
+    setBusy(false);
+  }
+  return (
+    <button
+      onClick={pull}
+      disabled={busy()}
+      class="flex items-center gap-1 px-2 py-1 bg-orange-500/10 hover:bg-orange-500/20 border border-orange-500/20 rounded text-[11px] text-orange-400/80 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+    >
+      <span>{busy() ? "..." : "⇣ Pull"}</span>
+      <span class="text-orange-500/50">{props.behind}</span>
+      <Show when={msg()}>
+        <span class="text-zinc-500">· {msg()}</span>
+      </Show>
+    </button>
+  );
+}
+
+function PushButton(props: { repoPath: string; repoName: string; ahead: number; machine?: string; onRefresh: (repoPath: string) => Promise<void> }) {
+  const [busy, setBusy] = createSignal(false);
+  const [msg, setMsg] = createSignal<string | null>(null);
+  async function push() {
+    if (busy()) return;
+    setBusy(true);
+    setMsg(null);
+    const result = await api.pushRepo(props.repoPath, props.machine);
+    if (result.ok) await props.onRefresh(props.repoPath);
+    setMsg(result.ok ? `Pushed` : `Failed: ${result.error ?? "unknown"}`);
+    setBusy(false);
+  }
+  return (
+    <button
+      onClick={push}
+      disabled={busy()}
+      class="flex items-center gap-1 px-2 py-1 bg-emerald-500/10 hover:bg-emerald-500/20 border border-emerald-500/20 rounded text-[11px] text-emerald-400/80 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+    >
+      <span>{busy() ? "..." : "⇡ Push"}</span>
+      <span class="text-emerald-500/50">{props.ahead}</span>
+      <Show when={msg()}>
+        <span class="text-zinc-500">· {msg()}</span>
+      </Show>
+    </button>
+  );
+}
+
+function CommitButton(props: { repoPath: string; commitBusy: () => string | null; commitPhase: () => string; commitError: () => string | null; onCommit: () => void; onCancel: () => void }) {
+  const isBusy = () => props.commitBusy() === props.repoPath;
+  const phaseLabel = () => {
+    const labels: Record<string, string> = { staging: "Staging...", generating: "Generating message...", committing: "Committing...", pushing: "Pushing..." };
+    return labels[props.commitPhase()] || "";
+  };
+  return (
+    <div class="flex-1">
+      <Show when={!isBusy() && !props.commitError()}>
+        <button onClick={() => props.onCommit()} class="flex items-center gap-1 px-2 py-1 bg-sky-500/10 hover:bg-sky-500/20 border border-sky-500/20 rounded text-[11px] text-sky-400/80 transition-colors">
+          ⇡ Commit & Push
+        </button>
+      </Show>
+      <Show when={isBusy()}>
+        <div class="flex items-center gap-2">
+          <div class="h-1 bg-zinc-800 rounded-full overflow-hidden flex-1 min-w-[60px]">
+            <div class="h-full bg-sky-500/60 rounded-full transition-all duration-300 ease-out animate-pulse" style={{ width: "100%" }} />
+          </div>
+          <span class="text-[10px] text-zinc-500 tabular-nums">{phaseLabel()}</span>
+          <button onClick={() => props.onCancel()} class="text-[10px] text-zinc-600 hover:text-zinc-400 transition-colors">cancel</button>
+        </div>
+      </Show>
+      <Show when={!isBusy() && !!props.commitError()}>
+        <div class="flex items-center gap-2">
+          <span class="text-[10px] text-red-400/80 truncate max-w-[200px]">{props.commitError()}</span>
+          <button onClick={() => props.onCommit()} class="text-[10px] text-sky-400/80 hover:text-sky-300 transition-colors shrink-0">retry</button>
+        </div>
+      </Show>
+    </div>
+  );
+}
+
 export default function App() {
   const [dir, setDir] = createSignal<string | null>(null);
   const [repos, setRepos] = createSignal<RepoInfo[]>([]);
@@ -215,6 +301,59 @@ export default function App() {
     setSidebarCloseForce(t => t + 1);
   }
 
+  async function handleRefreshRepo(repoPath: string) {
+    const data = await api.getRepos();
+    const updated = data.repos.map(repoDataToInfo).find(r => r.path === repoPath);
+    if (updated) {
+      setRepos(prev => {
+        const next = prev.slice();
+        const idx = next.findIndex(r => r.path === repoPath);
+        if (idx >= 0) next[idx] = updated;
+        return next;
+      });
+    }
+  }
+
+  function handleStartCommit(repoPath: string) {
+    if (commitBusy()) return;
+    setCommitBusy(repoPath);
+    setCommitPhase("staging");
+    setCommitError(null);
+    commitController?.abort();
+    commitController = api.subscribeCommitPush(repoPath, (data) => {
+      if (data.phase === "error") {
+        setCommitError(data.error || "Unknown error");
+        setCommitBusy(null);
+        setCommitPhase("");
+      } else if (data.phase === "done") {
+        api.getRepos().then(d => {
+          const updated = d.repos.map(repoDataToInfo).find(r => r.path === repoPath);
+          if (updated) {
+            setRepos(prev => {
+              const next = prev.slice();
+              const idx = next.findIndex(r => r.path === repoPath);
+              if (idx >= 0) next[idx] = updated;
+              return next;
+            });
+          }
+        });
+        setCommitBusy(null);
+        setCommitPhase("");
+        setCommitError(null);
+      } else {
+        setCommitPhase(data.phase);
+        setCommitError(null);
+      }
+    });
+  }
+
+  function handleCancelCommit() {
+    api.cancelCommit();
+    commitController?.abort();
+    setCommitBusy(null);
+    setCommitPhase("");
+  }
+
   const selectedRepoData = () => {
     sidebarCloseForce();
     const sel = selectedRepo();
@@ -271,178 +410,6 @@ export default function App() {
       },
     };
   });
-
-  function PullButton(props: { repoPath: string; repoName: string; behind: number; machine?: string }) {
-    const [busy, setBusy] = createSignal(false);
-    const [msg, setMsg] = createSignal<string | null>(null);
-    async function pull() {
-      if (busy()) return;
-      setBusy(true);
-      setMsg(null);
-      const result = await api.pullRepo(props.repoPath, props.machine);
-      console.log("[debug] PullButton pull result", result);
-      if (result.ok) {
-        const data = await api.getRepos();
-        console.log("[debug] PullButton gotRepos", { count: data.repos.length, paths: data.repos.map(r => r.path) });
-        const updated = data.repos.map(repoDataToInfo).find(r => r.path === props.repoPath);
-        console.log("[debug] PullButton updated found", !!updated);
-        if (updated) {
-          setRepos(prev => {
-            const next = prev.slice();
-            const idx = next.findIndex(r => r.path === props.repoPath);
-            if (idx >= 0) next[idx] = updated;
-            return next;
-          });
-        }
-      }
-      console.log("[debug] PullButton setMsg/busy before");
-      setMsg(result.ok ? `Pulled` : `Failed: ${result.error ?? "unknown"}`);
-      setBusy(false);
-      console.log("[debug] PullButton setMsg/busy done");
-    }
-    return (
-      <button
-        onClick={pull}
-        disabled={busy()}
-        class="flex items-center gap-1 px-2 py-1 bg-orange-500/10 hover:bg-orange-500/20 border border-orange-500/20 rounded text-[11px] text-orange-400/80 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
-      >
-        <span>{busy() ? "..." : "⇣ Pull"}</span>
-        <span class="text-orange-500/50">{props.behind}</span>
-        <Show when={msg()}>
-          <span class="text-zinc-500">· {msg()}</span>
-        </Show>
-      </button>
-    );
-  }
-
-  function PushButton(props: { repoPath: string; repoName: string; ahead: number; machine?: string }) {
-    const [busy, setBusy] = createSignal(false);
-    const [msg, setMsg] = createSignal<string | null>(null);
-    async function push() {
-      if (busy()) return;
-      setBusy(true);
-      setMsg(null);
-      const result = await api.pushRepo(props.repoPath, props.machine);
-      if (result.ok) {
-        const data = await api.getRepos();
-        const updated = data.repos.map(repoDataToInfo).find(r => r.path === props.repoPath);
-        if (updated) {
-          setRepos(prev => {
-            const next = prev.slice();
-            const idx = next.findIndex(r => r.path === props.repoPath);
-            if (idx >= 0) next[idx] = updated;
-            return next;
-          });
-        }
-      }
-      setMsg(result.ok ? `Pushed` : `Failed: ${result.error ?? "unknown"}`);
-      setBusy(false);
-    }
-    return (
-      <button
-        onClick={push}
-        disabled={busy()}
-        class="flex items-center gap-1 px-2 py-1 bg-emerald-500/10 hover:bg-emerald-500/20 border border-emerald-500/20 rounded text-[11px] text-emerald-400/80 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
-      >
-        <span>{busy() ? "..." : "⇡ Push"}</span>
-        <span class="text-emerald-500/50">{props.ahead}</span>
-        <Show when={msg()}>
-          <span class="text-zinc-500">· {msg()}</span>
-        </Show>
-      </button>
-    );
-  }
-
-  function CommitButton(props: { repoPath: string }) {
-    const isBusy = () => commitBusy() === props.repoPath;
-    const phaseLabel = () => {
-      const labels: Record<string, string> = {
-        staging: "Staging...",
-        generating: "Generating message...",
-        committing: "Committing...",
-        pushing: "Pushing...",
-      };
-      return labels[commitPhase()] || "";
-    };
-    function start() {
-      if (commitBusy()) return;
-      setCommitBusy(props.repoPath);
-      setCommitPhase("staging");
-      setCommitError(null);
-      commitController?.abort();
-      commitController = api.subscribeCommitPush(props.repoPath, (data) => {
-        if (data.phase === "error") {
-          setCommitError(data.error || "Unknown error");
-          setCommitBusy(null);
-          setCommitPhase("");
-        } else if (data.phase === "done") {
-          api.getRepos().then(d => {
-            const updated = d.repos.map(repoDataToInfo).find(r => r.path === props.repoPath);
-            if (updated) {
-              setRepos(prev => {
-                const next = prev.slice();
-                const idx = next.findIndex(r => r.path === props.repoPath);
-                if (idx >= 0) next[idx] = updated;
-                return next;
-              });
-            }
-          });
-          setCommitBusy(null);
-          setCommitPhase("");
-          setCommitError(null);
-        } else {
-          setCommitPhase(data.phase);
-          setCommitError(null);
-        }
-      });
-    }
-    function cancel() {
-      api.cancelCommit();
-      commitController?.abort();
-      setCommitBusy(null);
-      setCommitPhase("");
-    }
-    return (
-      <div class="flex-1">
-        <Show when={!isBusy() && !commitError()}>
-          <button
-            onClick={start}
-            class="flex items-center gap-1 px-2 py-1 bg-sky-500/10 hover:bg-sky-500/20 border border-sky-500/20 rounded text-[11px] text-sky-400/80 transition-colors"
-          >
-            ⇡ Commit & Push
-          </button>
-        </Show>
-        <Show when={isBusy()}>
-          <div class="flex items-center gap-2">
-            <div class="h-1 bg-zinc-800 rounded-full overflow-hidden flex-1 min-w-[60px]">
-              <div
-                class="h-full bg-sky-500/60 rounded-full transition-all duration-300 ease-out animate-pulse"
-                style={{ width: "100%" }}
-              />
-            </div>
-            <span class="text-[10px] text-zinc-500 tabular-nums">{phaseLabel()}</span>
-            <button
-              onClick={cancel}
-              class="text-[10px] text-zinc-600 hover:text-zinc-400 transition-colors"
-            >
-              cancel
-            </button>
-          </div>
-        </Show>
-        <Show when={!isBusy() && commitError() && commitBusy() === null}>
-          <div class="flex items-center gap-2">
-            <span class="text-[10px] text-red-400/80 truncate max-w-[200px]">{commitError()}</span>
-            <button
-              onClick={start}
-              class="text-[10px] text-sky-400/80 hover:text-sky-300 transition-colors shrink-0"
-            >
-              retry
-            </button>
-          </div>
-        </Show>
-      </div>
-    );
-  }
 
   function RepoCard(props: { repo: RepoInfo }) {
     const repo = () => props.repo;
@@ -610,13 +577,13 @@ export default function App() {
 
           <div class="flex flex-wrap items-center gap-2 mb-4">
             <Show when={repo().status.behind > 0}>
-              <PullButton repoPath={repo().path} repoName={repo().name} behind={repo().status.behind} machine={repo().machine !== "local" ? repo().machine : undefined} />
+              <PullButton repoPath={repo().path} repoName={repo().name} behind={repo().status.behind} machine={repo().machine !== "local" ? repo().machine : undefined} onRefresh={handleRefreshRepo} />
             </Show>
             <Show when={repo().status.ahead > 0}>
-              <PushButton repoPath={repo().path} repoName={repo().name} ahead={repo().status.ahead} machine={repo().machine !== "local" ? repo().machine : undefined} />
+              <PushButton repoPath={repo().path} repoName={repo().name} ahead={repo().status.ahead} machine={repo().machine !== "local" ? repo().machine : undefined} onRefresh={handleRefreshRepo} />
             </Show>
             <Show when={repo().status.staged > 0 || repo().status.unstaged > 0 || repo().status.untracked > 0}>
-              <CommitButton repoPath={repo().path} />
+              <CommitButton repoPath={repo().path} commitBusy={commitBusy} commitPhase={commitPhase} commitError={commitError} onCommit={() => handleStartCommit(repo().path)} onCancel={handleCancelCommit} />
             </Show>
           </div>
         </Show>
