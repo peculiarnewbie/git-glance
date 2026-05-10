@@ -14,6 +14,9 @@ importers:
 
   packages/desktop:
     dependencies:
+      effect:
+        specifier: 4.0.0-beta.60
+        version: 4.0.0-beta.60
       solid-js:
         specifier: ^1.9.11
         version: 1.9.12

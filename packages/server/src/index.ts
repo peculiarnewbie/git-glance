@@ -1,5 +1,5 @@
 import { Layer } from "effect"
-import { BunHttpServer, BunRuntime } from "@effect/platform-bun"
+import { BunHttpClient, BunHttpServer, BunRuntime } from "@effect/platform-bun"
 import { HttpRouter } from "effect/unstable/http"
 import { makeServerLayer } from "./routes.js"
 import { ServerConfigLive } from "./config.js"
@@ -12,6 +12,7 @@ const program = makeServerLayer.pipe(
   HttpRouter.serve,
   Layer.provide(ServerConfigLive),
   Layer.provide(ServerLayer),
+  Layer.provide(BunHttpClient.layer),
 )
 
 BunRuntime.runMain(Layer.launch(program))

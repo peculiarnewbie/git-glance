@@ -52,7 +52,10 @@ try {
   const configPath = join(homedir(), ".git-glance", "config.json")
   const cfg = JSON.parse(readFileSync(configPath, "utf-8"))
   if (cfg.rootDir) Effect.runSync(cacheService.addScannedDir(cfg.rootDir))
-  if (cfg.machines?.length > 0) initRemoteService()
+  if (cfg.machines?.length > 0) {
+    const rs = initRemoteService()
+    Effect.runSync(rs.updateConfig(cfg))
+  }
 } catch {} // no config yet, that's fine
 
 // ─── API route layer ───────────────────────────────────────────────
@@ -60,6 +63,12 @@ try {
 const apiRoutes = HttpRouter.use(
   (router: HttpRouter.HttpRouter) =>
     Effect.gen(function* () {
+      // ── Startup: begin remote machine polling ────────────────────
+      const startupConfig = yield* cacheService.loadConfig()
+      const remoteSvc = initRemoteService()
+      yield* remoteSvc.updateConfig(startupConfig)
+      yield* remoteSvc.startPolling(startupConfig)
+
       // ── GET /health ──────────────────────────────────────────────
       yield* router.add("GET", "/health", HttpServerResponse.json({ status: "ok" }))
 
@@ -359,6 +368,8 @@ function updateRepoInCache(repo: string) {
     if (!status) return
     const repos = [...(yield* cacheService.load())]
     const idx = repos.findIndex((r) => r.path === repo)
+    // Preserve settings from the existing cached entry
+    const existing = idx >= 0 ? repos[idx] : null
     const updated = new GitRepo({
       name: basename(repo),
       path: repo,
@@ -374,8 +385,8 @@ function updateRepoInCache(repo: string) {
       weekCommits: status.weekCommits,
       lastScanTime: Date.now(),
       error: null,
-      machine: "local",
-      settings: null,
+      machine: existing?.machine ?? "local",
+      settings: existing?.settings ?? null,
     })
     if (idx >= 0) {
       repos.splice(idx, 1, updated)

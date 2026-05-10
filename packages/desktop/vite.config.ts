@@ -6,7 +6,9 @@ export default defineConfig({
   base: "./",
   plugins: [solid(), tailwindcss()],
   server: {
-    port: 5173,
+    host: "0.0.0.0",
+    port: 8912,
+    allowedHosts: ["cachy"],
     proxy: {
       "/health": "http://localhost:3456",
       "/repos": "http://localhost:3456",

@@ -1,5 +1,5 @@
 import { createSignal, For, Show, createMemo, onMount, onCleanup } from "solid-js";
-import { api, repoDataToInfo } from "./api";
+import { api, repoDataToInfo, runUiEffect } from "./api";
 import type { RepoInfo } from "./api";
 
 type SortKey = "last-commit" | "week-activity" | "name" | "pull-count";
@@ -21,14 +21,18 @@ function timeAgo(ts: number): string {
 function PullButton(props: { repoPath: string; repoName: string; behind: number; machine?: string; onRefresh: (repoPath: string) => Promise<void> }) {
   const [busy, setBusy] = createSignal(false);
   const [msg, setMsg] = createSignal<string | null>(null);
-  async function pull() {
+  function pull() {
     if (busy()) return;
     setBusy(true);
     setMsg(null);
-    const result = await api.pullRepo(props.repoPath, props.machine);
-    if (result.ok) await props.onRefresh(props.repoPath);
-    setMsg(result.ok ? `Pulled` : `Failed: ${result.error ?? "unknown"}`);
-    setBusy(false);
+    runUiEffect(api.pullRepoEffect(props.repoPath, props.machine), {
+      onSuccess: async (result) => {
+        if (result.ok) await props.onRefresh(props.repoPath);
+        setMsg(result.ok ? "Pulled" : `Failed: ${result.error ?? "unknown"}`);
+      },
+      onFailure: (error) => setMsg(`Failed: ${error.message}`),
+      onFinally: () => setBusy(false),
+    });
   }
   return (
     <button
@@ -48,14 +52,18 @@ function PullButton(props: { repoPath: string; repoName: string; behind: number;
 function PushButton(props: { repoPath: string; repoName: string; ahead: number; machine?: string; onRefresh: (repoPath: string) => Promise<void> }) {
   const [busy, setBusy] = createSignal(false);
   const [msg, setMsg] = createSignal<string | null>(null);
-  async function push() {
+  function push() {
     if (busy()) return;
     setBusy(true);
     setMsg(null);
-    const result = await api.pushRepo(props.repoPath, props.machine);
-    if (result.ok) await props.onRefresh(props.repoPath);
-    setMsg(result.ok ? `Pushed` : `Failed: ${result.error ?? "unknown"}`);
-    setBusy(false);
+    runUiEffect(api.pushRepoEffect(props.repoPath, props.machine), {
+      onSuccess: async (result) => {
+        if (result.ok) await props.onRefresh(props.repoPath);
+        setMsg(result.ok ? "Pushed" : `Failed: ${result.error ?? "unknown"}`);
+      },
+      onFailure: (error) => setMsg(`Failed: ${error.message}`),
+      onFinally: () => setBusy(false),
+    });
   }
   return (
     <button
@@ -116,7 +124,6 @@ export default function App() {
   const [loading, setLoading] = createSignal(true);
   const [config, setConfig] = createSignal<{ opencodeModel: string; machines?: { name: string; url: string }[] }>({ opencodeModel: "CrofAI/deepseek-v4-flash" });
   const [showSettings, setShowSettings] = createSignal(false);
-  const [sidebarCloseForce, setSidebarCloseForce] = createSignal(0);
   const [modelDraft, setModelDraft] = createSignal("");
   const [commitBusy, setCommitBusy] = createSignal<string | null>(null);
   const [commitPhase, setCommitPhase] = createSignal<string>("");
@@ -172,7 +179,7 @@ export default function App() {
 
     const data = await api.getRepos();
     setRepos(data.repos.map(repoDataToInfo));
-    setMachines(data.machines.map(m => ({ name: m.name, url: m.url, online: m.online })));
+    if (data.machines.length > 0) setMachines(data.machines.map(m => ({ name: m.name, url: m.url, online: m.online })));
     setLoading(false);
   });
 
@@ -222,7 +229,10 @@ export default function App() {
     repoBuffer = [];
     if (flushTimer !== null) { clearTimeout(flushTimer); flushTimer = null; }
     setScanning(true);
+    setFetching(false);
     setProgress({ current: 0, total: 0 });
+    setFetchProgress({ current: 0, total: 0 });
+    setFetchCurrentRepo("");
 
     const d = dir();
     if (!d) return;
@@ -241,36 +251,32 @@ export default function App() {
             }, 80);
           }
         }
+      } else if (data.phase === "fetching") {
+        setFetching(true);
+        setFetchProgress({ current: data.current, total: data.total });
+        if (data.repo) {
+          setFetchCurrentRepo(data.repo.name || data.repo.path);
+          // Update repo in buffer/list with updated fetch status
+          repoBuffer.push({ ...repoDataToInfo(data.repo), cached: false });
+          if (flushTimer === null) {
+            flushTimer = setTimeout(() => {
+              flushTimer = null;
+              flushRepoBuffer();
+            }, 80);
+          }
+        }
       } else if (data.phase === "done") {
         if (flushTimer !== null) { clearTimeout(flushTimer); flushTimer = null; }
         flushRepoBuffer();
         setScanning(false);
-        setFetching(true);
+        setFetching(false);
         setFetchProgress({ current: 0, total: 0 });
-        fetchController?.abort();
-        fetchController = api.subscribeFetch((ev) => {
-          if (ev.phase === "fetching") {
-            setFetchCurrentRepo(ev.repoName || ev.repoPath || "");
-            setFetchProgress({ current: ev.current, total: ev.total });
-          } else if (ev.phase === "repo") {
-            console.log("[debug] Fetch SSE repo event", { path: ev.repoPath, ahead: ev.ahead, behind: ev.behind, current: ev.current, total: ev.total });
-            setRepos(prev => {
-              const next = prev.slice();
-              const idx = next.findIndex(r => r.path === ev.repoPath);
-              if (idx >= 0) {
-                next[idx] = { ...next[idx], cached: false, status: { ...next[idx].status, ahead: ev.ahead ?? next[idx].status.ahead, behind: ev.behind ?? next[idx].status.behind, branch: ev.branch || next[idx].status.branch, error: ev.error || next[idx].status.error } };
-              }
-              return next;
-            });
-            setFetchProgress({ current: ev.current, total: ev.total });
-          } else if (ev.phase === "done") {
-            setFetching(false);
-            setFetchCurrentRepo("");
-          }
-        });
+        setFetchCurrentRepo("");
       }
     }, () => {
       setScanning(false);
+      setFetching(false);
+      setFetchCurrentRepo("");
       if (flushTimer !== null) { clearTimeout(flushTimer); flushTimer = null; }
       flushRepoBuffer();
     });
@@ -282,6 +288,8 @@ export default function App() {
     if (flushTimer !== null) { clearTimeout(flushTimer); flushTimer = null; }
     flushRepoBuffer();
     setScanning(false);
+    setFetching(false);
+    setFetchCurrentRepo("");
   }
 
   async function updateRepoSettings(repoPath: string, settings: { skipUntracked?: boolean; skipPullCheck?: boolean; hidden?: boolean }) {
@@ -298,7 +306,6 @@ export default function App() {
 
   function closeSidebar() {
     setSelectedRepo(null);
-    setSidebarCloseForce(t => t + 1);
   }
 
   async function handleRefreshRepo(repoPath: string) {
@@ -354,13 +361,10 @@ export default function App() {
     setCommitPhase("");
   }
 
-  const selectedRepoData = () => {
-    sidebarCloseForce();
+  const selectedRepoData = createMemo(() => {
     const sel = selectedRepo();
-    const result = repos().find(r => r.path === sel);
-    console.log("[debug] selectedRepoData re-eval", { selectedRepo: sel, found: result?.path ?? "undefined", reposLen: repos().length });
-    return result;
-  };
+    return sel ? repos().find(r => r.path === sel) : undefined;
+  });
   const hasCached = () => repos().some(r => r.cached);
 
   const listData = createMemo(() => {
@@ -482,17 +486,14 @@ export default function App() {
 
   function Sidebar(props: { repo: RepoInfo }) {
     const repo = () => props.repo;
-    const currentPath = repo().path;
-    onMount(() => console.log("[debug] Sidebar mounted", currentPath));
-    onCleanup(() => console.log("[debug] Sidebar cleanup", currentPath));
     return (
       <>
-        <div class="fixed inset-0 z-30" onClick={() => { console.log("[debug] Sidebar backdrop click"); closeSidebar(); }} />
+        <div class="fixed inset-0 z-30" onClick={closeSidebar} />
         <div class="fixed top-0 right-0 z-40 h-full w-80 bg-[#09090b] border-l border-zinc-800/50 shadow-2xl p-5 overflow-y-auto">
         <div class="flex items-center justify-between mb-4">
           <h2 class="text-sm font-semibold text-zinc-100 truncate">{repo().name}</h2>
           <button
-            onClick={() => { console.log("[debug] Sidebar X click"); closeSidebar(); }}
+            onClick={closeSidebar}
             class="text-zinc-600 hover:text-zinc-400 transition-colors shrink-0 ml-2 p-1.5"
           >
             <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -958,8 +959,8 @@ export default function App() {
         </Show>
       </div>
 
-      <Show when={selectedRepoData()}>
-        <Sidebar repo={selectedRepoData()!} />
+      <Show when={selectedRepoData()} keyed>
+        {(repo) => <Sidebar repo={repo} />}
       </Show>
 
       <Show when={showDirModal()}>

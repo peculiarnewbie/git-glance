@@ -52,7 +52,7 @@ export const RemoteMachineServiceLive = (
     Effect.gen(function* () {
       const response = yield* httpClient.get(`${machine.url}/repos`).pipe(
         Effect.timeout(Duration.seconds(10)),
-        Effect.catchAll((e) =>
+        Effect.catchCause((e) =>
           Effect.fail(new RemoteMachineError({ machine: machine.name, cause: String(e) })),
         ),
       )
@@ -79,7 +79,7 @@ export const RemoteMachineServiceLive = (
         m.name === machine.name ? { ...m, online: true, lastSeen: Date.now() } : m,
       )
     }).pipe(
-      Effect.catchAll((e) =>
+      Effect.catchCause((e) =>
         Effect.gen(function* () {
           machines = machines.map((m) =>
             m.name === machine.name ? { ...m, online: false } : m,
@@ -98,16 +98,21 @@ export const RemoteMachineServiceLive = (
       yield* reloadRemoteRepos()
     })
 
+  let pollingStarted = false
+
   return {
     startPolling: (config) =>
       Effect.gen(function* () {
+        if (pollingStarted) return
+        pollingStarted = true
+
         const httpClient = yield* HttpClient.HttpClient
         machines = (config.machines ?? []).map((m) => initialState(m.name, m.url))
 
-        yield* Effect.forkScoped(
+        yield* Effect.forkDetach(
           pollAll(httpClient).pipe(
             Effect.repeat(Schedule.spaced(Duration.seconds(30))),
-            Effect.catchAll((e) =>
+            Effect.catchCause((e) =>
               Effect.logWarning("Remote machine polling error", { cause: String(e) }),
             ),
             Effect.forever,
@@ -148,7 +153,7 @@ export const RemoteMachineServiceLive = (
           .request(method, url, body ? { body } : undefined)
           .pipe(
             Effect.timeout(Duration.seconds(30)),
-            Effect.catchAll((e) =>
+            Effect.catchCause((e) =>
               Effect.fail(new RemoteMachineError({ machine: machineName, cause: String(e) })),
             ),
           )

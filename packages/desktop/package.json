@@ -4,13 +4,15 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "vite --open",
+    "dev": "vite",
+    "dev:webview": "node -e \"const{join}=require('path');const{spawn}=require('child_process');const p=process.platform;const a=process.arch==='x64'?'x64':'arm64';const d=join('node_modules','electrobun','dist-'+p+'-'+a);const t=join(process.cwd(),'src','bun','dev.ts');spawn('./bun',[t],{cwd:d,stdio:'inherit'}).on('exit',c=>process.exit(c||0))\"",
     "build": "vite build",
     "build:css": "tailwindcss -i ./src/index.css -o ./views/mainview/index.css",
     "build:desktop": "bun run build:css && electrobun build --env=stable",
     "preview": "vite preview"
   },
   "dependencies": {
+    "effect": "4.0.0-beta.60",
     "solid-js": "^1.9.11"
   },
   "devDependencies": {

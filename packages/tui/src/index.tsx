@@ -126,9 +126,22 @@ function App() {
                   }
                   return [...prev, event.repo!]
                 })
+              } else if (event.phase === "fetching" && event.repo) {
+                setScanProgress({ current: event.current, total: event.total })
+                setStatusMsg(`Fetching ${event.repo.name}... (${event.current}/${event.total})`)
+                setRepos((prev) => {
+                  const idx = prev.findIndex((r) => r.path === event.repo!.path)
+                  if (idx >= 0) {
+                    const next = [...prev]
+                    next[idx] = event.repo!
+                    return next
+                  }
+                  return [...prev, event.repo!]
+                })
               } else if (event.phase === "done") {
                 setScanning(false)
                 setScanProgress({ current: 0, total: 0 })
+                setStatusMsg("")
               }
             } catch {
               // skip malformed events

@@ -1,4 +1,65 @@
+import { Data, Duration, Effect } from "effect"
+
 const BASE = ""
+
+export class ApiError extends Data.TaggedError("ApiError")<{
+  readonly message: string
+  readonly status?: number
+}> {}
+
+function requestJsonEffect<T>(url: string, init?: RequestInit): Effect.Effect<T, ApiError> {
+  return Effect.tryPromise({
+    try: async (signal) => {
+      const res = await fetch(url, { ...init, signal })
+      let body: unknown
+      try {
+        body = await res.json()
+      } catch {
+        body = null
+      }
+
+      if (!res.ok) {
+        const error = body && typeof body === "object" && "error" in body
+          ? String((body as { error?: unknown }).error)
+          : `Request failed with status ${res.status}`
+        throw new ApiError({ message: error, status: res.status })
+      }
+
+      return body as T
+    },
+    catch: (e) => e instanceof ApiError
+      ? e
+      : new ApiError({ message: e instanceof Error ? e.message : String(e) }),
+  }).pipe(
+    Effect.timeoutOrElse({
+      duration: Duration.seconds(45),
+      orElse: () => Effect.fail(new ApiError({ message: "Request timed out" })),
+    }),
+  )
+}
+
+export function runUiEffect<A>(
+  effect: Effect.Effect<A, ApiError>,
+  handlers: {
+    readonly onSuccess?: (value: A) => void | Promise<void>
+    readonly onFailure?: (error: ApiError) => void
+    readonly onFinally?: () => void
+  },
+): void {
+  Effect.runPromiseExit(effect).then(async (exit) => {
+    try {
+      if (exit._tag === "Success") {
+        await handlers.onSuccess?.(exit.value)
+      } else {
+        handlers.onFailure?.(new ApiError({ message: String(exit.cause) }))
+      }
+    } catch (e) {
+      handlers.onFailure?.(new ApiError({ message: e instanceof Error ? e.message : String(e) }))
+    } finally {
+      handlers.onFinally?.()
+    }
+  })
+}
 
 export interface RepoData {
   name: string
@@ -87,11 +148,23 @@ export const api = {
     return res.json()
   },
 
+  pullRepoEffect: (repo: string, machine?: string): Effect.Effect<{ ok: boolean; output?: string; error?: string }, ApiError> => {
+    const params = new URLSearchParams({ repo })
+    if (machine) params.set("machine", machine)
+    return requestJsonEffect(`${BASE}/pull?${params}`, { method: "POST" })
+  },
+
   pushRepo: async (repo: string, machine?: string): Promise<{ ok: boolean; output?: string; error?: string }> => {
     const params = new URLSearchParams({ repo })
     if (machine) params.set("machine", machine)
     const res = await fetch(`${BASE}/push?${params}`, { method: "POST" })
     return res.json()
+  },
+
+  pushRepoEffect: (repo: string, machine?: string): Effect.Effect<{ ok: boolean; output?: string; error?: string }, ApiError> => {
+    const params = new URLSearchParams({ repo })
+    if (machine) params.set("machine", machine)
+    return requestJsonEffect(`${BASE}/push?${params}`, { method: "POST" })
   },
 
   updateRepoSettings: async (repo: string, settings: { skipUntracked?: boolean; skipPullCheck?: boolean; hidden?: boolean }): Promise<void> => {

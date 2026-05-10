@@ -1,4 +1,4 @@
-import { Context, Data, Effect } from "effect"
+import { Context, Data, Effect, Semaphore } from "effect"
 import { exec } from "node:child_process"
 
 export class GitCommandError extends Data.TaggedError("GitCommandError")<{
@@ -38,6 +38,17 @@ export const GitService = Context.Service<GitServiceShape>(
 
 // ─── Helpers ─────────────────────────────────────────────────────────
 
+const repoLocks = new Map<string, Semaphore.Semaphore>()
+
+function withRepoLock<A, E>(repoPath: string, effect: Effect.Effect<A, E>): Effect.Effect<A, E> {
+  let lock = repoLocks.get(repoPath)
+  if (!lock) {
+    lock = Semaphore.makeUnsafe(1)
+    repoLocks.set(repoPath, lock)
+  }
+  return lock.withPermit(effect)
+}
+
 function execGit(
   args: string,
   repoPath: string,
@@ -66,6 +77,14 @@ function execGit(
     )
     return Effect.sync(() => child.kill())
   }).pipe(Effect.retry({ times: 1, delay: 200 }))
+}
+
+function runGit(
+  args: string,
+  repoPath: string,
+  options?: { readonly timeout?: number },
+): Effect.Effect<string, GitCommandError> {
+  return withRepoLock(repoPath, execGit(args, repoPath, options))
 }
 
 function safeExec(
@@ -148,6 +167,6 @@ function getStatus(
 }
 
 export const GitServiceLive: GitServiceShape = {
-  run: execGit,
-  getStatus,
+  run: runGit,
+  getStatus: (repoPath) => withRepoLock(repoPath, getStatus(repoPath)),
 }

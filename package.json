@@ -6,9 +6,10 @@
     "build:tui": "bun build --compile ./packages/tui/src/index.ts --outfile=dist/git-glance-tui",
     "build:desktop": "cd packages/desktop && electrobun build --env=stable",
     "dist": "pnpm build:serve && pnpm build:desktop",
-    "dev": "concurrently \"pnpm --filter @git-glance/server dev\" \"pnpm --filter @git-glance/desktop dev\"",
+    "dev": "concurrently -n server,vite,webview \"pnpm --filter @git-glance/server dev\" \"pnpm --filter @git-glance/desktop dev\" \"pnpm --filter @git-glance/desktop dev:webview\"",
     "dev:server": "pnpm --filter @git-glance/server dev",
     "dev:tui": "pnpm --filter @git-glance/tui dev",
+    "dev:ui": "concurrently -n vite,webview \"pnpm --filter @git-glance/desktop dev\" \"pnpm --filter @git-glance/desktop dev:webview\"",
     "start": "pnpm --filter @git-glance/server start"
   },
   "devDependencies": {
