@@ -216,6 +216,44 @@ export const api = {
     return controller
   },
 
+  subscribeScanOnly: (rootDir: string, onEvent: (ev: ProgressEvent) => void, onError?: () => void): AbortController => {
+    const controller = new AbortController()
+    const source = new EventSource(`${BASE}/scan-only?rootDir=${encodeURIComponent(rootDir)}`)
+    source.onmessage = (msg) => {
+      try {
+        onEvent(JSON.parse(msg.data))
+      } catch {}
+    }
+    source.onerror = () => {
+      controller.abort()
+      onError?.()
+    }
+    controller.signal.addEventListener("abort", () => source.close())
+    return controller
+  },
+
+  rescanRepo: async (repo: string): Promise<{ ok: boolean; repo?: RepoData; error?: string }> => {
+    const params = new URLSearchParams({ repo })
+    const res = await fetch(`${BASE}/rescan-repo?${params}`, { method: "POST" })
+    return res.json()
+  },
+
+  rescanRepoEffect: (repo: string): Effect.Effect<{ ok: boolean; repo?: RepoData; error?: string }, ApiError> => {
+    const params = new URLSearchParams({ repo })
+    return requestJsonEffect(`${BASE}/rescan-repo?${params}`, { method: "POST" })
+  },
+
+  checkPull: async (repo: string): Promise<{ ok: boolean; repo?: RepoData; error?: string }> => {
+    const params = new URLSearchParams({ repo })
+    const res = await fetch(`${BASE}/check-pull?${params}`, { method: "POST" })
+    return res.json()
+  },
+
+  checkPullEffect: (repo: string): Effect.Effect<{ ok: boolean; repo?: RepoData; error?: string }, ApiError> => {
+    const params = new URLSearchParams({ repo })
+    return requestJsonEffect(`${BASE}/check-pull?${params}`, { method: "POST" })
+  },
+
   subscribeFetch: (onEvent: (ev: FetchEvent) => void): AbortController => {
     const controller = new AbortController()
     const source = new EventSource(`${BASE}/fetch`)

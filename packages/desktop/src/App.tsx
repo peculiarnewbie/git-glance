@@ -224,20 +224,17 @@ export default function App() {
     await api.setConfig({ rootDir: path });
   }
 
-  function startScan() {
+  function startScanOnly() {
     scanController?.abort();
     repoBuffer = [];
     if (flushTimer !== null) { clearTimeout(flushTimer); flushTimer = null; }
     setScanning(true);
-    setFetching(false);
     setProgress({ current: 0, total: 0 });
-    setFetchProgress({ current: 0, total: 0 });
-    setFetchCurrentRepo("");
 
     const d = dir();
     if (!d) return;
 
-    scanController = api.subscribeScan(d, (data) => {
+    scanController = api.subscribeScanOnly(d, (data) => {
       if (data.phase === "discovering") {
         setProgress({ current: 0, total: data.total });
       } else if (data.phase === "scanning") {
@@ -251,34 +248,50 @@ export default function App() {
             }, 80);
           }
         }
-      } else if (data.phase === "fetching") {
-        setFetching(true);
-        setFetchProgress({ current: data.current, total: data.total });
-        if (data.repo) {
-          setFetchCurrentRepo(data.repo.name || data.repo.path);
-          // Update repo in buffer/list with updated fetch status
-          repoBuffer.push({ ...repoDataToInfo(data.repo), cached: false });
-          if (flushTimer === null) {
-            flushTimer = setTimeout(() => {
-              flushTimer = null;
-              flushRepoBuffer();
-            }, 80);
-          }
-        }
       } else if (data.phase === "done") {
         if (flushTimer !== null) { clearTimeout(flushTimer); flushTimer = null; }
         flushRepoBuffer();
         setScanning(false);
+      }
+    }, () => {
+      setScanning(false);
+      if (flushTimer !== null) { clearTimeout(flushTimer); flushTimer = null; }
+      flushRepoBuffer();
+    });
+  }
+
+  function startFetchAll() {
+    fetchController?.abort();
+    setFetching(true);
+    setFetchProgress({ current: 0, total: 0 });
+    setFetchCurrentRepo("");
+
+    fetchController = api.subscribeFetch((data) => {
+      if (data.phase === "fetching") {
+        setFetchProgress({ current: data.current, total: data.total });
+      } else if (data.phase === "repo") {
+        setFetchProgress({ current: data.current, total: data.total });
+        if (data.repoName) {
+          setFetchCurrentRepo(data.repoName);
+        }
+        if (data.repoPath) {
+          api.getRepos().then(d => {
+            const updated = d.repos.map(repoDataToInfo).find(r => r.path === data.repoPath);
+            if (updated) {
+              setRepos(prev => {
+                const next = prev.slice();
+                const idx = next.findIndex(r => r.path === data.repoPath);
+                if (idx >= 0) next[idx] = updated;
+                return next;
+              });
+            }
+          });
+        }
+      } else if (data.phase === "done") {
         setFetching(false);
         setFetchProgress({ current: 0, total: 0 });
         setFetchCurrentRepo("");
       }
-    }, () => {
-      setScanning(false);
-      setFetching(false);
-      setFetchCurrentRepo("");
-      if (flushTimer !== null) { clearTimeout(flushTimer); flushTimer = null; }
-      flushRepoBuffer();
     });
   }
 
@@ -288,7 +301,13 @@ export default function App() {
     if (flushTimer !== null) { clearTimeout(flushTimer); flushTimer = null; }
     flushRepoBuffer();
     setScanning(false);
+  }
+
+  function cancelFetchAll() {
+    api.cancelFetch();
+    fetchController?.abort();
     setFetching(false);
+    setFetchProgress({ current: 0, total: 0 });
     setFetchCurrentRepo("");
   }
 
@@ -359,6 +378,73 @@ export default function App() {
     commitController?.abort();
     setCommitBusy(null);
     setCommitPhase("");
+  }
+
+  const [repoActionBusy, setRepoActionBusy] = createSignal<Set<string>>(new Set());
+  const [repoActionMsg, setRepoActionMsg] = createSignal<Map<string, string>>(new Map());
+
+  function setRepoBusy(repoPath: string, busy: boolean) {
+    setRepoActionBusy(prev => {
+      const next = new Set(prev);
+      if (busy) next.add(repoPath);
+      else next.delete(repoPath);
+      return next;
+    });
+  }
+
+  function setRepoMsg(repoPath: string, msg: string | null) {
+    setRepoActionMsg(prev => {
+      const next = new Map(prev);
+      if (msg) next.set(repoPath, msg);
+      else next.delete(repoPath);
+      return next;
+    });
+  }
+
+  async function handleRescanRepo(repoPath: string) {
+    if (repoActionBusy().has(repoPath)) return;
+    setRepoBusy(repoPath, true);
+    setRepoMsg(repoPath, "Scanning...");
+    const result = await api.rescanRepo(repoPath);
+    if (result.ok && result.repo) {
+      const info = repoDataToInfo(result.repo);
+      setRepos(prev => {
+        const next = prev.slice();
+        const idx = next.findIndex(r => r.path === repoPath);
+        if (idx >= 0) next[idx] = info;
+        return next;
+      });
+      setRepoMsg(repoPath, "Scanned");
+    } else {
+      setRepoMsg(repoPath, result.error || "Failed");
+    }
+    setRepoBusy(repoPath, false);
+    setTimeout(() => setRepoMsg(repoPath, null), 2000);
+  }
+
+  async function handleCheckPull(repoPath: string) {
+    if (repoActionBusy().has(repoPath)) return;
+    setRepoBusy(repoPath, true);
+    setRepoMsg(repoPath, "Checking...");
+    const result = await api.checkPull(repoPath);
+    if (result.ok && result.repo) {
+      const info = repoDataToInfo(result.repo);
+      setRepos(prev => {
+        const next = prev.slice();
+        const idx = next.findIndex(r => r.path === repoPath);
+        if (idx >= 0) next[idx] = info;
+        return next;
+      });
+      if (result.repo.behind > 0) {
+        setRepoMsg(repoPath, `⇣${result.repo.behind} behind`);
+      } else {
+        setRepoMsg(repoPath, "Up to date");
+      }
+    } else {
+      setRepoMsg(repoPath, result.error || "Failed");
+    }
+    setRepoBusy(repoPath, false);
+    setTimeout(() => setRepoMsg(repoPath, null), 2000);
   }
 
   const selectedRepoData = createMemo(() => {
@@ -587,6 +673,32 @@ export default function App() {
               <CommitButton repoPath={repo().path} commitBusy={commitBusy} commitPhase={commitPhase} commitError={commitError} onCommit={() => handleStartCommit(repo().path)} onCancel={handleCancelCommit} />
             </Show>
           </div>
+
+          <div class="border-t border-zinc-800/40 pt-3 mb-4">
+            <div class="text-[11px] font-medium text-zinc-500 uppercase tracking-[0.1em] mb-2">Repo Actions</div>
+            <div class="flex flex-wrap items-center gap-2">
+              <button
+                onClick={() => handleRescanRepo(repo().path)}
+                disabled={repoActionBusy().has(repo().path) || scanning() || fetching()}
+                class="flex items-center gap-1 px-2 py-1 bg-zinc-800/50 hover:bg-zinc-700/50 border border-zinc-700/50 rounded text-[11px] text-zinc-400 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+              >
+                <span>{repoActionBusy().has(repo().path) && repoActionMsg().get(repo().path)?.startsWith("Scan") ? "..." : "↻"} Scan</span>
+                <Show when={repoActionMsg().get(repo().path) && repoActionMsg().get(repo().path)!.startsWith("Scan")}>
+                  <span class="text-zinc-500">· {repoActionMsg().get(repo().path)}</span>
+                </Show>
+              </button>
+              <button
+                onClick={() => handleCheckPull(repo().path)}
+                disabled={repoActionBusy().has(repo().path) || scanning() || fetching()}
+                class="flex items-center gap-1 px-2 py-1 bg-zinc-800/50 hover:bg-zinc-700/50 border border-zinc-700/50 rounded text-[11px] text-zinc-400 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+              >
+                <span>{repoActionBusy().has(repo().path) && repoActionMsg().get(repo().path)?.includes("Check") ? "..." : "⇣"} Check Pull</span>
+                <Show when={repoActionMsg().get(repo().path) && (repoActionMsg().get(repo().path)!.includes("behind") || repoActionMsg().get(repo().path) === "Up to date" || repoActionMsg().get(repo().path) === "Checking..." || repoActionMsg().get(repo().path)?.includes("Failed"))}>
+                  <span class="text-zinc-500">· {repoActionMsg().get(repo().path)}</span>
+                </Show>
+              </button>
+            </div>
+          </div>
         </Show>
 
         <div class="border-t border-zinc-800/40 pt-3 mb-4">
@@ -675,19 +787,39 @@ export default function App() {
               {dir() ? "Change" : "Select Directory"}
             </button>
             <Show when={dir()}>
-              <Show when={!scanning()} fallback={
-                <button
-                  onClick={cancelScan}
-                  class="px-3 py-1.5 bg-red-600/80 hover:bg-red-500 rounded-lg text-[11px] font-medium transition-colors"
-                >
-                  Cancel
-                </button>
+              <Show when={!scanning() && !fetching()} fallback={
+                <>
+                  <Show when={scanning()}>
+                    <button
+                      onClick={cancelScan}
+                      class="px-3 py-1.5 bg-red-600/80 hover:bg-red-500 rounded-lg text-[11px] font-medium transition-colors"
+                    >
+                      Cancel Scan
+                    </button>
+                  </Show>
+                  <Show when={fetching()}>
+                    <button
+                      onClick={cancelFetchAll}
+                      class="px-3 py-1.5 bg-red-600/80 hover:bg-red-500 rounded-lg text-[11px] font-medium transition-colors"
+                    >
+                      Cancel Fetch
+                    </button>
+                  </Show>
+                </>
               }>
                 <button
-                  onClick={startScan}
-                  class="px-3 py-1.5 bg-amber-600/90 hover:bg-amber-500 rounded-lg text-[11px] font-medium transition-colors"
+                  onClick={startScanOnly}
+                  disabled={fetching()}
+                  class="px-3 py-1.5 bg-amber-600/90 hover:bg-amber-500 rounded-lg text-[11px] font-medium transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
                 >
                   Scan
+                </button>
+                <button
+                  onClick={startFetchAll}
+                  disabled={scanning()}
+                  class="flex items-center gap-1 px-3 py-1.5 bg-sky-600/80 hover:bg-sky-500 rounded-lg text-[11px] font-medium transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+                >
+                  <span>⇣ Check Pull</span>
                 </button>
               </Show>
             </Show>

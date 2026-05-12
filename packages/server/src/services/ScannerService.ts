@@ -7,6 +7,7 @@ import type { CacheServiceShape } from "./CacheService.js"
 
 export interface ScannerServiceShape {
   readonly scan: (rootDir: string, machine?: string) => Stream.Stream<ScanProgress>
+  readonly scanOnly: (rootDir: string, machine?: string) => Stream.Stream<ScanProgress>
 }
 
 export const ScannerService = Context.Service<ScannerServiceShape>(
@@ -175,6 +176,95 @@ export const ScannerServiceLive = (
   git: GitServiceShape,
   cache: CacheServiceShape,
 ): ScannerServiceShape => ({
+  scanOnly: (rootDir, machine = "local") =>
+    Stream.unwrap(
+      Effect.gen(function* () {
+        const repoPaths = findGitRepos(rootDir)
+        const total = repoPaths.length
+
+        const existingRepos = yield* cache.load().pipe(
+          Effect.catch(() => Effect.succeed([] as Array<GitRepo>)),
+        )
+
+        const queue = yield* Queue.unbounded<ScanProgress>()
+
+        yield* Queue.offer(
+          queue,
+          new ScanProgress({ phase: "discovering", total, current: 0, repo: null }),
+        )
+
+        yield* Effect.forkScoped(
+          Effect.gen(function* () {
+            const results = new Array<GitRepo>(repoPaths.length)
+            let scanCompleted = 0
+
+            yield* Effect.forEach(
+              repoPaths.map((repoPath, index) => ({ repoPath, index })),
+              ({ repoPath, index }) =>
+                Effect.gen(function* () {
+                  if (canceled) return
+
+                  const repo = yield* scanOneRepo(repoPath, git, machine).pipe(
+                    Effect.timeout(Duration.seconds(30)),
+                    Effect.catch((e) =>
+                      Effect.succeed(
+                        new GitRepo({
+                          name: basename(repoPath),
+                          path: repoPath,
+                          branch: null,
+                          hasChanges: false,
+                          staged: 0,
+                          unstaged: 0,
+                          untracked: 0,
+                          ahead: 0,
+                          behind: 0,
+                          remote: null,
+                          lastCommitTime: null,
+                          weekCommits: 0,
+                          lastScanTime: Date.now(),
+                          error: String(e),
+                          machine,
+                          settings: null,
+                        }),
+                      ),
+                    ),
+                  )
+
+                  if (canceled) return
+
+                  const withSettings = mergeSettings(repo, existingRepos)
+                  results[index] = withSettings
+                  scanCompleted++
+                  yield* Queue.offer(
+                    queue,
+                    new ScanProgress({ phase: "scanning", total, current: scanCompleted, repo: withSettings }),
+                  )
+                }),
+              { concurrency: scanConcurrency, discard: true },
+            )
+
+            const scannedResults = results.filter((repo): repo is GitRepo => repo !== undefined)
+            yield* cache.save(scannedResults)
+
+            yield* Queue.offer(
+              queue,
+              new ScanProgress({ phase: "done", total: scannedResults.length, current: scannedResults.length, repo: null }),
+            )
+          }).pipe(
+            Effect.catch((e) =>
+              Queue.offer(
+                queue,
+                new ScanProgress({ phase: "done", total, current: 0, repo: null }),
+              ),
+            ),
+            Effect.ensuring(Queue.shutdown(queue)),
+          ),
+        )
+
+        return Stream.fromQueue(queue)
+      }),
+    ),
+
   scan: (rootDir, machine = "local") =>
     Stream.unwrap(
       Effect.gen(function* () {

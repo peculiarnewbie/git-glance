@@ -124,6 +124,100 @@ const apiRoutes = HttpRouter.use(
           }),
       )
 
+      // ── GET /scan-only?rootDir=X (SSE) ──────────────────────────
+      yield* router.add(
+        "GET",
+        "/scan-only",
+        (req: HttpServerRequest.HttpServerRequest) =>
+          Effect.gen(function* () {
+            const url = new URL(req.url, "http://localhost")
+            const rootDir = url.searchParams.get("rootDir")
+            if (!rootDir) {
+              return HttpServerResponse.text('Missing "rootDir" query parameter', { status: 400 })
+            }
+            cancelScan = false
+            resetCancel()
+            yield* cacheService.addScannedDir(rootDir)
+
+            const scanner = ScannerServiceLive(gitService, cacheService)
+            const stream = scanner.scanOnly(rootDir, "local").pipe(
+              Stream.map(formatSSE),
+              Stream.map((s) => new TextEncoder().encode(s)),
+              Stream.catchCause(() => Stream.empty),
+            )
+
+            return HttpServerResponse.stream(stream, {
+              headers: {
+                "Content-Type": "text/event-stream",
+                "Cache-Control": "no-cache",
+                Connection: "keep-alive",
+              },
+            })
+          }),
+      )
+
+      // ── POST /rescan-repo?repo=X ────────────────────────────────
+      yield* router.add(
+        "POST",
+        "/rescan-repo",
+        (req: HttpServerRequest.HttpServerRequest) =>
+          Effect.gen(function* () {
+            const url = new URL(req.url, "http://localhost")
+            const repo = url.searchParams.get("repo")
+            if (!repo) {
+              return yield* HttpServerResponse.json({ ok: false, error: 'Missing "repo" parameter' }, { status: 400 })
+            }
+
+            const status = yield* gitService.getStatus(repo).pipe(
+              Effect.catch(() => Effect.succeed(null)),
+            )
+
+            if (!status) {
+              return yield* HttpServerResponse.json({ ok: false, error: "Failed to get status" }, { status: 500 })
+            }
+
+            yield* updateRepoInCache(repo)
+
+            const repos = yield* cacheService.load()
+            const updated = [...repos].find(r => r.path === repo) || null
+
+            return yield* HttpServerResponse.json({ ok: true, repo: updated })
+          }),
+      )
+
+      // ── POST /check-pull?repo=X ─────────────────────────────────
+      yield* router.add(
+        "POST",
+        "/check-pull",
+        (req: HttpServerRequest.HttpServerRequest) =>
+          Effect.gen(function* () {
+            const url = new URL(req.url, "http://localhost")
+            const repo = url.searchParams.get("repo")
+            if (!repo) {
+              return yield* HttpServerResponse.json({ ok: false, error: 'Missing "repo" parameter' }, { status: 400 })
+            }
+
+            yield* gitService.run("fetch origin", repo, { timeout: 30_000 }).pipe(
+              Effect.catch(() => Effect.succeed("")),
+            )
+
+            const status = yield* gitService.getStatus(repo).pipe(
+              Effect.catch(() => Effect.succeed(null)),
+            )
+
+            if (!status) {
+              return yield* HttpServerResponse.json({ ok: false, error: "Failed to get status after fetch" }, { status: 500 })
+            }
+
+            yield* updateRepoInCache(repo)
+
+            const repos = yield* cacheService.load()
+            const updated = [...repos].find(r => r.path === repo) || null
+
+            return yield* HttpServerResponse.json({ ok: true, repo: updated })
+          }),
+      )
+
       // ── POST /pull?repo=X ────────────────────────────────────────
       yield* router.add(
         "POST",
