@@ -10,19 +10,27 @@ import (
 )
 
 type Executor struct {
-	git   *GitService
-	cache *CacheService
-	ws    *WSClient
-	cfg   AgentConfig
+	git      *GitService
+	cache    *CacheService
+	sender   MessageSender
+	wsClient *WSClient
+	cfg      AgentConfig
 }
 
-func NewExecutor(git *GitService, cache *CacheService, ws *WSClient, cfg AgentConfig) *Executor {
-	return &Executor{git: git, cache: cache, ws: ws, cfg: cfg}
+func NewExecutor(git *GitService, cache *CacheService, sender MessageSender, cfg AgentConfig) *Executor {
+	return &Executor{git: git, cache: cache, sender: sender, cfg: cfg}
+}
+
+func NewClientExecutor(git *GitService, cache *CacheService, ws *WSClient, cfg AgentConfig) *Executor {
+	return &Executor{git: git, cache: cache, sender: ws, wsClient: ws, cfg: cfg}
 }
 
 func (e *Executor) Run() {
+	if e.wsClient == nil {
+		return
+	}
 	for {
-		msg, err := e.ws.ReadMessage()
+		msg, err := e.wsClient.ReadMessage()
 		if err != nil {
 			log.Printf("Read error: %v", err)
 			return
@@ -48,6 +56,10 @@ func (e *Executor) Run() {
 
 func (e *Executor) handle(id, action string, params map[string]any) {
 	switch action {
+	case "getRepos":
+		e.handleGetRepos(id)
+	case "getConfig":
+		e.handleGetConfig(id)
 	case "scan", "scanOnly":
 		e.handleScan(id, action, params)
 	case "fetchAll":
@@ -68,20 +80,39 @@ func (e *Executor) handle(id, action string, params map[string]any) {
 		e.handleSetConfig(id, params)
 	case "cancelScan":
 		CancelScan()
-		e.ws.SendResult(id, map[string]bool{"ok": true})
+		e.sender.SendResult(id, map[string]bool{"ok": true})
 	case "cancelCommit":
-		e.ws.SendResult(id, map[string]bool{"ok": true})
+		e.sender.SendResult(id, map[string]bool{"ok": true})
 	case "cancelFetch":
-		e.ws.SendResult(id, map[string]bool{"ok": true})
+		e.sender.SendResult(id, map[string]bool{"ok": true})
 	default:
-		e.ws.SendError(id, fmt.Sprintf("unknown action: %s", action))
+		e.sender.SendError(id, fmt.Sprintf("unknown action: %s", action))
 	}
+}
+
+func (e *Executor) handleGetRepos(id string) {
+	repos, _ := e.cache.Load()
+	now := time.Now().UnixMilli()
+	e.sender.SendResult(id, map[string]any{
+		"repos":       repos,
+		"machines":    []any{},
+		"scannedAt":   now,
+		"scannedDirs": e.cache.GetScannedDirs(),
+	})
+}
+
+func (e *Executor) handleGetConfig(id string) {
+	cfg, _ := e.cache.LoadConfig()
+	if cfg.OpenCodeModel == "" {
+		cfg.OpenCodeModel = "CrofAI/deepseek-v4-flash"
+	}
+	e.sender.SendResult(id, cfg)
 }
 
 func (e *Executor) handleScan(id, action string, params map[string]any) {
 	rootDir, _ := params["rootDir"].(string)
 	if rootDir == "" {
-		e.ws.SendError(id, `Missing "rootDir" parameter`)
+		e.sender.SendError(id, `Missing "rootDir" parameter`)
 		return
 	}
 
@@ -98,14 +129,14 @@ func (e *Executor) handleScan(id, action string, params map[string]any) {
 	}
 
 	for p := range progressCh {
-		if err := e.ws.SendProgress(id, p); err != nil {
+		if err := e.sender.SendProgress(id, p); err != nil {
 			CancelScan()
 			return
 		}
 	}
 
-	e.ws.SendReposUpdate(getLocalRepos(e.cache))
-	e.ws.SendDone(id)
+	e.sender.SendReposUpdate(getLocalRepos(e.cache))
+	e.sender.SendDone(id)
 }
 
 func (e *Executor) handleFetchAll(id string) {
@@ -123,12 +154,12 @@ func (e *Executor) handleFetchAll(id string) {
 			Branch:   branch,
 			Error:    errStr,
 		}
-		e.ws.SendProgress(id, fp)
+		e.sender.SendProgress(id, fp)
 	}
 
 	allRepos, err := e.cache.Load()
 	if err != nil {
-		e.ws.SendError(id, err.Error())
+		e.sender.SendError(id, err.Error())
 		return
 	}
 
@@ -143,7 +174,7 @@ func (e *Executor) handleFetchAll(id string) {
 	total := len(localRepos)
 	if total == 0 {
 		sendProgress("done", 0, 0, nil, nil, nil, nil, nil, nil)
-		e.ws.SendDone(id)
+		e.sender.SendDone(id)
 		return
 	}
 
@@ -171,14 +202,14 @@ func (e *Executor) handleFetchAll(id string) {
 	}
 
 	sendProgress("done", total, total, nil, nil, nil, nil, nil, nil)
-	e.ws.SendReposUpdate(getLocalRepos(e.cache))
-	e.ws.SendDone(id)
+	e.sender.SendReposUpdate(getLocalRepos(e.cache))
+	e.sender.SendDone(id)
 }
 
 func (e *Executor) handleCommitPush(id string, params map[string]any) {
 	repo, _ := params["repo"].(string)
 	if repo == "" {
-		e.ws.SendError(id, `Missing "repo" parameter`)
+		e.sender.SendError(id, `Missing "repo" parameter`)
 		return
 	}
 
@@ -206,7 +237,7 @@ func (e *Executor) handleCommitPush(id string, params map[string]any) {
 				}
 			}
 		}
-		e.ws.SendProgress(id, cp)
+		e.sender.SendProgress(id, cp)
 	}
 
 	sendProgress := func(phase string) {
@@ -217,14 +248,14 @@ func (e *Executor) handleCommitPush(id string, params map[string]any) {
 	_, err := e.git.RunWithLock(ctx, "add .", repo, 15*time.Second)
 	if err != nil {
 		send("error", map[string]any{"error": err.Error()})
-		e.ws.SendDone(id)
+		e.sender.SendDone(id)
 		return
 	}
 
 	branch, err := e.git.RunWithLock(ctx, "rev-parse --abbrev-ref HEAD", repo, 5*time.Second)
 	if err != nil {
 		send("error", map[string]any{"error": err.Error()})
-		e.ws.SendDone(id)
+		e.sender.SendDone(id)
 		return
 	}
 
@@ -233,7 +264,7 @@ func (e *Executor) handleCommitPush(id string, params map[string]any) {
 
 	if stagedPatch == "" {
 		send("error", map[string]any{"error": "No changes to commit"})
-		e.ws.SendDone(id)
+		e.sender.SendDone(id)
 		return
 	}
 
@@ -247,7 +278,7 @@ func (e *Executor) handleCommitPush(id string, params map[string]any) {
 	commitMsg, err := generateCommitMessage(ctx, repo, branch, stagedSummary, stagedPatch, model)
 	if err != nil {
 		send("error", map[string]any{"error": err.Error()})
-		e.ws.SendDone(id)
+		e.sender.SendDone(id)
 		return
 	}
 
@@ -256,10 +287,10 @@ func (e *Executor) handleCommitPush(id string, params map[string]any) {
 	if commitMsg.Body != "" {
 		fullMessage = commitMsg.Subject + "\n\n" + commitMsg.Body
 	}
-	_, err = e.git.RunWithLock(ctx, fmt.Sprintf(`commit -m "%s"`, escapeCommitMsg(fullMessage)), repo, 15*time.Second)
+	_, err = e.git.RunWithLockArgs(ctx, []string{"commit", "-m", fullMessage}, repo, 15*time.Second)
 	if err != nil {
 		send("error", map[string]any{"error": err.Error()})
-		e.ws.SendDone(id)
+		e.sender.SendDone(id)
 		return
 	}
 
@@ -267,77 +298,77 @@ func (e *Executor) handleCommitPush(id string, params map[string]any) {
 	_, err = e.git.RunWithLock(ctx, "push", repo, 60*time.Second)
 	if err != nil {
 		send("error", map[string]any{"error": err.Error()})
-		e.ws.SendDone(id)
+		e.sender.SendDone(id)
 		return
 	}
 
 	updateRepoInCache(e.git, e.cache, repo)
 	send("done", map[string]any{"subject": commitMsg.Subject, "body": commitMsg.Body})
-	e.ws.SendReposUpdate(getLocalRepos(e.cache))
-	e.ws.SendDone(id)
+	e.sender.SendReposUpdate(getLocalRepos(e.cache))
+	e.sender.SendDone(id)
 }
 
 func (e *Executor) handlePull(id string, params map[string]any) {
 	repo, _ := params["repo"].(string)
 	if repo == "" {
-		e.ws.SendError(id, `Missing "repo" parameter`)
+		e.sender.SendError(id, `Missing "repo" parameter`)
 		return
 	}
 
 	ctx := context.Background()
 	output, err := e.git.RunWithLock(ctx, "pull", repo, 30*time.Second)
 	if err != nil {
-		e.ws.SendResult(id, PullPushResult{Ok: false, Error: strPtr(err.Error())})
+		e.sender.SendResult(id, PullPushResult{Ok: false, Error: strPtr(err.Error())})
 		return
 	}
 
 	updateRepoInCache(e.git, e.cache, repo)
-	e.ws.SendReposUpdate(getLocalRepos(e.cache))
-	e.ws.SendResult(id, PullPushResult{Ok: true, Output: &output})
+	e.sender.SendReposUpdate(getLocalRepos(e.cache))
+	e.sender.SendResult(id, PullPushResult{Ok: true, Output: &output})
 }
 
 func (e *Executor) handlePush(id string, params map[string]any) {
 	repo, _ := params["repo"].(string)
 	if repo == "" {
-		e.ws.SendError(id, `Missing "repo" parameter`)
+		e.sender.SendError(id, `Missing "repo" parameter`)
 		return
 	}
 
 	ctx := context.Background()
 	output, err := e.git.RunWithLock(ctx, "push", repo, 60*time.Second)
 	if err != nil {
-		e.ws.SendResult(id, PullPushResult{Ok: false, Error: strPtr(err.Error())})
+		e.sender.SendResult(id, PullPushResult{Ok: false, Error: strPtr(err.Error())})
 		return
 	}
 
 	updateRepoInCache(e.git, e.cache, repo)
-	e.ws.SendReposUpdate(getLocalRepos(e.cache))
-	e.ws.SendResult(id, PullPushResult{Ok: true, Output: &output})
+	e.sender.SendReposUpdate(getLocalRepos(e.cache))
+	e.sender.SendResult(id, PullPushResult{Ok: true, Output: &output})
 }
 
 func (e *Executor) handleRescanRepo(id string, params map[string]any) {
 	repo, _ := params["repo"].(string)
 	if repo == "" {
-		e.ws.SendError(id, `Missing "repo" parameter`)
+		e.sender.SendError(id, `Missing "repo" parameter`)
 		return
 	}
 
 	ctx := context.Background()
 	status, err := e.git.GetStatusWithLock(ctx, repo)
 	if err != nil {
-		e.ws.SendResult(id, RescanResult{Ok: false, Error: strPtr("Failed to get status")})
+		e.sender.SendResult(id, RescanResult{Ok: false, Error: strPtr("Failed to get status")})
 		return
 	}
 
 	updated := makeRepoFromStatus(repo, status)
 	updateRepoInCache(e.git, e.cache, repo)
-	e.ws.SendResult(id, RescanResult{Ok: true, Repo: &updated})
+	e.sender.SendResult(id, RescanResult{Ok: true, Repo: &updated})
 }
 
 func (e *Executor) handleCheckPull(id string, params map[string]any) {
 	repo, _ := params["repo"].(string)
 	if repo == "" {
-		e.ws.SendError(id, `Missing "repo" parameter`)
+		e.sender.SendError(id, `Missing "repo" parameter`)
 		return
 	}
 
@@ -346,19 +377,19 @@ func (e *Executor) handleCheckPull(id string, params map[string]any) {
 
 	status, err := e.git.GetStatusWithLock(ctx, repo)
 	if err != nil {
-		e.ws.SendResult(id, RescanResult{Ok: false, Error: strPtr("Failed to get status after fetch")})
+		e.sender.SendResult(id, RescanResult{Ok: false, Error: strPtr("Failed to get status after fetch")})
 		return
 	}
 
 	updated := makeRepoFromStatus(repo, status)
 	updateRepoInCache(e.git, e.cache, repo)
-	e.ws.SendResult(id, RescanResult{Ok: true, Repo: &updated})
+	e.sender.SendResult(id, RescanResult{Ok: true, Repo: &updated})
 }
 
 func (e *Executor) handleUpdateRepoSettings(id string, params map[string]any) {
 	repo, _ := params["repo"].(string)
 	if repo == "" {
-		e.ws.SendError(id, `Missing "repo" parameter`)
+		e.sender.SendError(id, `Missing "repo" parameter`)
 		return
 	}
 
@@ -391,7 +422,7 @@ func (e *Executor) handleUpdateRepoSettings(id string, params map[string]any) {
 	}
 
 	e.cache.Save(updated)
-	e.ws.SendResult(id, map[string]bool{"ok": true})
+	e.sender.SendResult(id, map[string]bool{"ok": true})
 }
 
 func (e *Executor) handleSetConfig(id string, params map[string]any) {
@@ -410,11 +441,11 @@ func (e *Executor) handleSetConfig(id string, params map[string]any) {
 	}
 
 	if err := e.cache.SaveConfig(existing); err != nil {
-		e.ws.SendError(id, err.Error())
+		e.sender.SendError(id, err.Error())
 		return
 	}
 
-	e.ws.SendResult(id, map[string]bool{"ok": true})
+	e.sender.SendResult(id, map[string]bool{"ok": true})
 }
 
 // --- Helpers ---
@@ -499,19 +530,4 @@ func getLocalRepos(cache *CacheService) []GitRepo {
 	return repos
 }
 
-func escapeCommitMsg(msg string) string {
-	escaped := ""
-	for _, c := range msg {
-		switch c {
-		case '"':
-			escaped += "\\\""
-		case '\\':
-			escaped += "\\\\"
-		case '\n':
-			escaped += "\\n"
-		default:
-			escaped += string(c)
-		}
-	}
-	return escaped
-}
+

@@ -17,18 +17,28 @@ export class GitGlanceDO extends DurableObject<Env> {
   };
 
   async fetch(request: Request): Promise<Response> {
+    console.log("[do] fetch", request.url);
     const [client, server] = Object.values(new WebSocketPair());
     const url = new URL(request.url);
     const isAgent = url.searchParams.has("token");
 
     server.serializeAttachment({ isAgent });
 
-    this.ctx.acceptWebSocket(server, isAgent ? [AGENT_TAG] : [BROWSER_TAG]);
+    try {
+      this.ctx.acceptWebSocket(server, isAgent ? [AGENT_TAG] : [BROWSER_TAG]);
+    } catch (e) {
+      console.log("[do] acceptWebSocket error", e);
+      return new Response("Internal error", { status: 500 });
+    }
 
     if (isAgent) {
-      const state = this.ctx.storage.kv.get<AgentState>("agent");
-      if (state) {
-        this.agentState = state;
+      try {
+        const state = this.ctx.storage.kv.get<AgentState>("agent");
+        if (state) {
+          this.agentState = state;
+        }
+      } catch (e) {
+        console.log("[do] storage.kv.get error", e);
       }
       server.send(JSON.stringify({ type: "registered", state: this.agentState }));
     } else {

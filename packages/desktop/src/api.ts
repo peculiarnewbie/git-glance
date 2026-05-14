@@ -5,16 +5,30 @@ let pending = new Map<string, { resolve: (v: any) => void; reject: (e: any) => v
 let subscriptions = new Map<string, Set<(data: any) => void>>()
 let idCounter = 0
 
+let connectPromise: Promise<void> | null = null
+
 function connect(): Promise<void> {
-  return new Promise((resolve, reject) => {
-    if (ws?.readyState === WebSocket.OPEN) return resolve()
+  if (ws?.readyState === WebSocket.OPEN) return Promise.resolve()
+  if (connectPromise) return connectPromise
+  connectPromise = new Promise((resolve, reject) => {
     const protocol = location.protocol === "https:" ? "wss:" : "ws:"
     const host = location.host
     const url = `${protocol}//${host}/ws`
+    console.log("[ws] connecting to", url)
     ws = new WebSocket(url)
-    ws.onopen = () => resolve()
-    ws.onerror = () => reject(new Error("WebSocket connection failed"))
-    ws.onclose = () => {
+    ws.onopen = () => {
+      console.log("[ws] connected")
+      connectPromise = null
+      resolve()
+    }
+    ws.onerror = (ev) => {
+      console.log("[ws] error", ev)
+      connectPromise = null
+      reject(new Error("WebSocket connection failed"))
+    }
+    ws.onclose = (ev) => {
+      console.log("[ws] closed code=%d reason=%s", ev.code, ev.reason)
+      connectPromise = null
       ws = null
       for (const [, p] of pending) p.reject(new Error("Connection closed"))
       pending.clear()
@@ -22,6 +36,7 @@ function connect(): Promise<void> {
     ws.onmessage = (msg) => {
       try {
         const { id, type, data, error } = JSON.parse(msg.data)
+        console.log("[ws] recv", { id, type })
         if (type === "result") {
           const p = pending.get(id)
           if (p) { p.resolve(data); pending.delete(id) }
@@ -36,9 +51,10 @@ function connect(): Promise<void> {
           subscriptions.get(id)?.forEach(fn => fn({ type: "done" }))
           subscriptions.delete(id)
         }
-      } catch {}
+      } catch (e) { console.log("[ws] parse error", e) }
     }
   })
+  return connectPromise
 }
 
 async function send<T>(action: string, params?: Record<string, any>): Promise<T> {

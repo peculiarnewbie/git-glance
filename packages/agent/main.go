@@ -17,6 +17,7 @@ type AgentConfig struct {
 }
 
 func main() {
+
 	homeDir, err := os.UserHomeDir()
 	if err != nil {
 		log.Fatalf("cannot get home dir: %v", err)
@@ -25,6 +26,7 @@ func main() {
 	configDir := filepath.Join(homeDir, ".git-glance")
 	agentConfigPath := filepath.Join(configDir, "agent.json")
 	cachePath := filepath.Join(configDir, "repo-cache.json")
+	persistedConfigPath := filepath.Join(configDir, "config.json")
 
 	cfg := readAgentConfig(agentConfigPath)
 	if cfg.DOURL == "" {
@@ -38,10 +40,9 @@ func main() {
 		cfg.AgentID = hostname
 	}
 
-	cache := NewCacheService(cachePath, agentConfigPath)
+	cache := NewCacheService(cachePath, persistedConfigPath)
 	git := NewGitService()
 	agent := NewAgent(cfg, cache, git)
-
 	agent.Run()
 }
 
@@ -114,7 +115,7 @@ func (a *Agent) Run() {
 
 		log.Printf("Connected and registered as %s", a.cfg.AgentID)
 
-		executor := NewExecutor(a.git, a.cache, ws, a.cfg)
+		executor := NewClientExecutor(a.git, a.cache, ws, a.cfg)
 		executor.Run()
 
 		ws.Close()

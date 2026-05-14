@@ -129,3 +129,12 @@ type WSResponse struct {
 	Data any    `json:"data,omitempty"`
 	Err  string `json:"error,omitempty"`
 }
+
+type MessageSender interface {
+	ReadMessage() ([]byte, error)
+	SendResult(id string, data any) error
+	SendError(id string, errMsg string) error
+	SendProgress(id string, data any) error
+	SendDone(id string) error
+	SendReposUpdate(repos []GitRepo) error
+}

@@ -57,7 +57,11 @@ func (g *GitService) execGit(ctx context.Context, args, repoPath string, timeout
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
-	cmd := exec.CommandContext(ctx, "git", strings.Fields(args)...)
+	parts := strings.Fields(args)
+	if len(parts) == 0 {
+		return "", &GitCommandError{Command: "git", RepoPath: repoPath, Cause: "empty args"}
+	}
+	cmd := exec.CommandContext(ctx, "git", parts...)
 	cmd.Dir = repoPath
 	cmd.Env = append(cmd.Environ(), "GIT_TERMINAL_PROMPT=0")
 
@@ -65,6 +69,28 @@ func (g *GitService) execGit(ctx context.Context, args, repoPath string, timeout
 	if err != nil {
 		return "", &GitCommandError{
 			Command:  "git " + args,
+			RepoPath: repoPath,
+			Cause:    err.Error(),
+		}
+	}
+	return strings.TrimSpace(string(out)), nil
+}
+
+func (g *GitService) execGitArgs(ctx context.Context, args []string, repoPath string, timeout time.Duration) (string, error) {
+	if timeout == 0 {
+		timeout = 10 * time.Second
+	}
+	ctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+
+	cmd := exec.CommandContext(ctx, "git", args...)
+	cmd.Dir = repoPath
+	cmd.Env = append(cmd.Environ(), "GIT_TERMINAL_PROMPT=0")
+
+	out, err := cmd.Output()
+	if err != nil {
+		return "", &GitCommandError{
+			Command:  "git " + strings.Join(args, " "),
 			RepoPath: repoPath,
 			Cause:    err.Error(),
 		}
@@ -88,6 +114,12 @@ func (g *GitService) RunWithLock(ctx context.Context, args, repoPath string, tim
 	unlock := g.withRepoLock(repoPath)
 	defer unlock()
 	return g.execGit(ctx, args, repoPath, timeout)
+}
+
+func (g *GitService) RunWithLockArgs(ctx context.Context, args []string, repoPath string, timeout time.Duration) (string, error) {
+	unlock := g.withRepoLock(repoPath)
+	defer unlock()
+	return g.execGitArgs(ctx, args, repoPath, timeout)
 }
 
 func (g *GitService) GetStatus(ctx context.Context, repoPath string) (*GitStatusResult, error) {
