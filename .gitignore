@@ -13,3 +13,10 @@ electrobun-dist/
 
 # Cloudflare assets build output
 packages/cloudflare/dist/
+
+# Alchemy deployment state
+.alchemy/
+
+# Env files
+.env
+.env.local

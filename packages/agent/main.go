@@ -1,10 +1,13 @@
 package main
 
 import (
+	"bufio"
 	"encoding/json"
+	"fmt"
 	"log"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 )
 
@@ -29,21 +32,54 @@ func main() {
 	persistedConfigPath := filepath.Join(configDir, "config.json")
 
 	cfg := readAgentConfig(agentConfigPath)
-	if cfg.DOURL == "" {
-		log.Fatal("do_url is required in ~/.git-glance/agent.json")
-	}
-	if cfg.Secret == "" {
-		log.Fatal("secret is required in ~/.git-glance/agent.json")
-	}
+
 	if cfg.AgentID == "" {
 		hostname, _ := os.Hostname()
 		cfg.AgentID = hostname
 	}
 
+	cfg = promptMissing(cfg, agentConfigPath)
+
 	cache := NewCacheService(cachePath, persistedConfigPath)
 	git := NewGitService()
 	agent := NewAgent(cfg, cache, git)
 	agent.Run()
+}
+
+func promptMissing(cfg AgentConfig, path string) AgentConfig {
+	stat, _ := os.Stdin.Stat()
+	isTTY := stat.Mode()&os.ModeCharDevice != 0
+	if !isTTY {
+		return cfg
+	}
+
+	scanner := bufio.NewScanner(os.Stdin)
+
+	if cfg.DOURL == "" {
+		fmt.Print("Enter DO WebSocket URL (e.g. wss://git-glance-dev.workers.dev/ws): ")
+		scanner.Scan()
+		cfg.DOURL = strings.TrimSpace(scanner.Text())
+	}
+
+	if cfg.Secret == "" {
+		fmt.Print("Enter GLANCE_SECRET: ")
+		scanner.Scan()
+		cfg.Secret = strings.TrimSpace(scanner.Text())
+	}
+
+	if cfg.RootDir == "" {
+		fmt.Print("Enter root directory to scan (e.g. /home/bolt/git): ")
+		scanner.Scan()
+		cfg.RootDir = strings.TrimSpace(scanner.Text())
+	}
+
+	if err := os.MkdirAll(filepath.Dir(path), 0755); err == nil {
+		data, _ := json.MarshalIndent(cfg, "", "  ")
+		os.WriteFile(path, data, 0644)
+		fmt.Printf("Saved config to %s\n", path)
+	}
+
+	return cfg
 }
 
 func readAgentConfig(path string) AgentConfig {

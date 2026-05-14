@@ -5,11 +5,16 @@
   "type": "module",
   "scripts": {
     "dev": "wrangler dev",
-    "deploy": "wrangler deploy",
+    "deploy": "pnpm run build && alchemy deploy alchemy.run.ts",
+    "deploy:wrangler": "wrangler deploy",
+    "build": "pnpm --filter @git-glance/desktop build && cp -r ../desktop/dist/* ./dist/",
     "types": "wrangler types"
   },
   "dependencies": {
+    "@effect/platform-node": "4.0.0-beta.64",
     "@openauthjs/openauth": "^0.4.3",
+    "alchemy": "2.0.0-beta.36",
+    "effect": "4.0.0-beta.64",
     "jose": "^6.2.3"
   },
   "devDependencies": {

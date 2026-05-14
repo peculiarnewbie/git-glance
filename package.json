@@ -5,7 +5,7 @@
     "build:serve-go": "cd packages/server-go && go build -o ../../dist/git-glance-serve .",
     "build:agent": "cd packages/agent && go build -o ../../dist/git-glance-agent .",
     "build:cloudflare": "pnpm --filter @git-glance/desktop build && cp -r packages/desktop/dist/* packages/cloudflare/dist/",
-    "deploy:cloudflare": "pnpm build:cloudflare && cd packages/cloudflare && wrangler deploy",
+    "deploy:cloudflare": "pnpm --filter @git-glance/cloudflare run deploy",
     "build:desktop": "cd packages/desktop && electrobun build --env=stable",
     "dev:cloudflare": "cd packages/cloudflare && mkdir -p dist && pnpm wrangler dev --port 3456",
     "dev:agent": "GLANCE_SECRET=dev-secret go run -C packages/agent .",
