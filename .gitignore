@@ -6,3 +6,6 @@ views/
 artifacts/
 build/
 electrobun-dist/
+
+# Go built binaries
+**/git-glance-serve

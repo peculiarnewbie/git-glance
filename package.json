@@ -3,6 +3,7 @@
   "private": true,
   "scripts": {
     "build:serve": "bun build --compile ./packages/server/src/index.ts --outfile=dist/git-glance-serve",
+    "build:serve-go": "cd packages/server-go && go build -o ../../dist/git-glance-serve .",
     "build:tui": "bun build --compile ./packages/tui/src/index.ts --outfile=dist/git-glance-tui",
     "build:desktop": "cd packages/desktop && electrobun build --env=stable",
     "dist": "pnpm build:serve && pnpm build:desktop",

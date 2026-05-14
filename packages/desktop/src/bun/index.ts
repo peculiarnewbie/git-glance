@@ -44,12 +44,16 @@ function findServerBinary(): string {
   throw new Error("git-glance-serve binary not found")
 }
 
-async function waitForHealth(url: string, timeout = 10000) {
+async function waitForServer(url: string, timeout = 10000) {
   const start = Date.now()
   while (Date.now() - start < timeout) {
     try {
-      const res = await fetch(url)
-      if (res.ok) return
+      const ws = new WebSocket(url.replace("http://", "ws://").replace("https://", "wss://") + "/ws")
+      await new Promise<void>((resolve, reject) => {
+        ws.onopen = () => { ws.close(); resolve() }
+        ws.onerror = () => reject()
+      })
+      return
     } catch {}
     await Bun.sleep(200)
   }
@@ -64,7 +68,7 @@ async function main() {
     stderr: "inherit",
   })
 
-  await waitForHealth(`http://localhost:${PORT}/health`)
+  await waitForServer(`http://localhost:${PORT}`)
 
   const win = new BrowserWindow({
     title: "Git Glance",

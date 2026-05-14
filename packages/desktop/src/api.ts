@@ -1,319 +1,216 @@
-import { Data, Duration, Effect } from "effect"
-
 const BASE = ""
 
-export class ApiError extends Data.TaggedError("ApiError")<{
-  readonly message: string
-  readonly status?: number
-}> {}
+let ws: WebSocket | null = null
+let pending = new Map<string, { resolve: (v: any) => void; reject: (e: any) => void }>()
+let subscriptions = new Map<string, Set<(data: any) => void>>()
+let idCounter = 0
 
-function requestJsonEffect<T>(url: string, init?: RequestInit): Effect.Effect<T, ApiError> {
-  return Effect.tryPromise({
-    try: async (signal) => {
-      const res = await fetch(url, { ...init, signal })
-      let body: unknown
+function connect(): Promise<void> {
+  return new Promise((resolve, reject) => {
+    if (ws?.readyState === WebSocket.OPEN) return resolve()
+    const protocol = location.protocol === "https:" ? "wss:" : "ws:"
+    const host = location.host
+    const url = `${protocol}//${host}/ws`
+    ws = new WebSocket(url)
+    ws.onopen = () => resolve()
+    ws.onerror = () => reject(new Error("WebSocket connection failed"))
+    ws.onclose = () => {
+      ws = null
+      for (const [, p] of pending) p.reject(new Error("Connection closed"))
+      pending.clear()
+    }
+    ws.onmessage = (msg) => {
       try {
-        body = await res.json()
-      } catch {
-        body = null
-      }
-
-      if (!res.ok) {
-        const error = body && typeof body === "object" && "error" in body
-          ? String((body as { error?: unknown }).error)
-          : `Request failed with status ${res.status}`
-        throw new ApiError({ message: error, status: res.status })
-      }
-
-      return body as T
-    },
-    catch: (e) => e instanceof ApiError
-      ? e
-      : new ApiError({ message: e instanceof Error ? e.message : String(e) }),
-  }).pipe(
-    Effect.timeoutOrElse({
-      duration: Duration.seconds(45),
-      orElse: () => Effect.fail(new ApiError({ message: "Request timed out" })),
-    }),
-  )
-}
-
-export function runUiEffect<A>(
-  effect: Effect.Effect<A, ApiError>,
-  handlers: {
-    readonly onSuccess?: (value: A) => void | Promise<void>
-    readonly onFailure?: (error: ApiError) => void
-    readonly onFinally?: () => void
-  },
-): void {
-  Effect.runPromiseExit(effect).then(async (exit) => {
-    try {
-      if (exit._tag === "Success") {
-        await handlers.onSuccess?.(exit.value)
-      } else {
-        handlers.onFailure?.(new ApiError({ message: String(exit.cause) }))
-      }
-    } catch (e) {
-      handlers.onFailure?.(new ApiError({ message: e instanceof Error ? e.message : String(e) }))
-    } finally {
-      handlers.onFinally?.()
+        const { id, type, data, error } = JSON.parse(msg.data)
+        if (type === "result") {
+          const p = pending.get(id)
+          if (p) { p.resolve(data); pending.delete(id) }
+        } else if (type === "error") {
+          const p = pending.get(id)
+          if (p) { p.reject(new Error(error)); pending.delete(id) }
+          const subs = subscriptions.get(id)
+          if (subs) { for (const fn of subs) fn({ type: "error", error }); subscriptions.delete(id) }
+        } else if (type === "progress") {
+          subscriptions.get(id)?.forEach(fn => fn(data))
+        } else if (type === "done") {
+          subscriptions.get(id)?.forEach(fn => fn({ type: "done" }))
+          subscriptions.delete(id)
+        }
+      } catch {}
     }
   })
 }
 
+async function send<T>(action: string, params?: Record<string, any>): Promise<T> {
+  await connect()
+  const id = String(++idCounter)
+  return new Promise((resolve, reject) => {
+    pending.set(id, { resolve, reject })
+    ws!.send(JSON.stringify({ id, action, params }))
+  })
+}
+
+function subscribe(action: string, params: Record<string, any> | undefined, onEvent: (data: any) => void): AbortController {
+  const controller = new AbortController()
+  connect().then(() => {
+    if (controller.signal.aborted) return
+    const id = String(++idCounter)
+    const subs = new Set([onEvent])
+    subscriptions.set(id, subs)
+    ws!.send(JSON.stringify({ id, action, params }))
+    controller.signal.addEventListener("abort", () => {
+      subscriptions.delete(id)
+      const cancelAction = "cancel" + action.charAt(0).toUpperCase() + action.slice(1)
+      send(cancelAction).catch(() => {})
+    })
+  })
+  return controller
+}
+
+// ─── Public API ──────────────────────────────────────────────────────
+
 export interface RepoData {
-  name: string
-  path: string
-  branch: string | null
-  hasChanges: boolean
-  staged: number
-  unstaged: number
-  untracked: number
-  ahead: number
-  behind: number
-  remote: string | null
-  lastCommitTime: number | null
-  weekCommits: number
-  lastScanTime: number | null
-  error: string | null
-  machine: string
+  name: string; path: string; branch: string | null; hasChanges: boolean
+  staged: number; unstaged: number; untracked: number
+  ahead: number; behind: number; remote: string | null
+  lastCommitTime: number | null; weekCommits: number; lastScanTime: number | null
+  error: string | null; machine: string
   settings: { skipUntracked: boolean; skipPullCheck: boolean; hidden: boolean } | null
 }
 
 export interface ReposResponse {
-  repos: RepoData[]
-  scannedAt: number
-  scannedDirs: string[]
+  repos: RepoData[]; scannedAt: number; scannedDirs: string[]
   machines: { name: string; url: string; online: boolean; lastSeen: number | null }[]
 }
 
 export interface ServerConfigResponse {
-  rootDir: string | null
-  opencodeModel: string
+  rootDir: string | null; opencodeModel: string
   machines: { name: string; url: string; online: boolean }[]
 }
 
 export interface ProgressEvent {
-  phase: string
-  current: number
-  total: number
-  repo?: RepoData
-  repoPath?: string
-  repoName?: string
+  phase: string; current: number; total: number
+  repo?: RepoData; repoPath?: string; repoName?: string
 }
 
 export interface CommitEvent {
-  phase: string
-  error?: string
-  subject?: string
-  body?: string
-  repoPath?: string
+  phase: string; error?: string; subject?: string; body?: string; repoPath?: string
 }
 
 export interface FetchEvent {
-  phase: string
-  repoPath?: string
-  repoName?: string
-  current: number
-  total: number
-  ahead?: number
-  behind?: number
-  branch?: string
-  error?: string
+  phase: string; repoPath?: string; repoName?: string
+  current: number; total: number; ahead?: number; behind?: number
+  branch?: string; error?: string
 }
 
 export const api = {
-  getRepos: async (): Promise<ReposResponse> => {
-    const res = await fetch(`${BASE}/repos`)
-    return res.json()
-  },
+  getRepos: (): Promise<ReposResponse> => send<ReposResponse>("getRepos"),
 
-  getConfig: async (): Promise<ServerConfigResponse> => {
-    const res = await fetch(`${BASE}/config`)
-    return res.json()
-  },
+  getConfig: (): Promise<ServerConfigResponse> => send<ServerConfigResponse>("getConfig"),
 
-  setConfig: async (config: { rootDir?: string; opencodeModel?: string; machines?: { name: string; url: string }[] }): Promise<void> => {
-    await fetch(`${BASE}/config`, {
-      method: "PUT",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(config),
-    })
-  },
+  setConfig: (config: { rootDir?: string; opencodeModel?: string; machines?: { name: string; url: string }[] }): Promise<void> =>
+    send("setConfig", config),
 
-  pullRepo: async (repo: string, machine?: string): Promise<{ ok: boolean; output?: string; error?: string }> => {
-    const params = new URLSearchParams({ repo })
-    if (machine) params.set("machine", machine)
-    const res = await fetch(`${BASE}/pull?${params}`, { method: "POST" })
-    return res.json()
-  },
+  pullRepo: (repo: string, machine?: string): Promise<{ ok: boolean; output?: string; error?: string }> =>
+    send("pull", { repo, machine }),
 
-  pullRepoEffect: (repo: string, machine?: string): Effect.Effect<{ ok: boolean; output?: string; error?: string }, ApiError> => {
-    const params = new URLSearchParams({ repo })
-    if (machine) params.set("machine", machine)
-    return requestJsonEffect(`${BASE}/pull?${params}`, { method: "POST" })
-  },
+  pushRepo: (repo: string, machine?: string): Promise<{ ok: boolean; output?: string; error?: string }> =>
+    send("push", { repo, machine }),
 
-  pushRepo: async (repo: string, machine?: string): Promise<{ ok: boolean; output?: string; error?: string }> => {
-    const params = new URLSearchParams({ repo })
-    if (machine) params.set("machine", machine)
-    const res = await fetch(`${BASE}/push?${params}`, { method: "POST" })
-    return res.json()
-  },
+  updateRepoSettings: (repo: string, settings: { skipUntracked?: boolean; skipPullCheck?: boolean; hidden?: boolean }): Promise<void> =>
+    send("updateRepoSettings", { repo, ...settings }),
 
-  pushRepoEffect: (repo: string, machine?: string): Effect.Effect<{ ok: boolean; output?: string; error?: string }, ApiError> => {
-    const params = new URLSearchParams({ repo })
-    if (machine) params.set("machine", machine)
-    return requestJsonEffect(`${BASE}/push?${params}`, { method: "POST" })
-  },
+  cancelScan: (): Promise<void> => send("cancelScan").then(() => {}),
+  cancelCommit: (): Promise<void> => send("cancelCommit").then(() => {}),
+  cancelFetch: (): Promise<void> => send("cancelFetch").then(() => {}),
 
-  updateRepoSettings: async (repo: string, settings: { skipUntracked?: boolean; skipPullCheck?: boolean; hidden?: boolean }): Promise<void> => {
-    await fetch(`${BASE}/settings?repo=${encodeURIComponent(repo)}`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(settings),
-    })
-  },
+  subscribeScan: (rootDir: string, onEvent: (ev: ProgressEvent) => void, onError?: () => void): AbortController =>
+    subscribe("scan", { rootDir }, (data) => {
+      if (data.type === "error") { onError?.(); return }
+      if (data.type === "done") return
+      onEvent(data)
+    }),
 
-  cancelScan: async (): Promise<void> => {
-    await fetch(`${BASE}/cancel-scan`, { method: "POST" })
-  },
+  subscribeCommitPush: (repo: string, onEvent: (ev: CommitEvent) => void): AbortController =>
+    subscribe("commitPush", { repo }, (data) => {
+      if (data.type === "done") return
+      onEvent(data)
+    }),
 
-  cancelCommit: async (): Promise<void> => {
-    await fetch(`${BASE}/cancel-commit`, { method: "POST" })
-  },
+  subscribeScanOnly: (rootDir: string, onEvent: (ev: ProgressEvent) => void, onError?: () => void): AbortController =>
+    subscribe("scanOnly", { rootDir }, (data) => {
+      if (data.type === "error") { onError?.(); return }
+      if (data.type === "done") return
+      onEvent(data)
+    }),
 
-  cancelFetch: async (): Promise<void> => {
-    await fetch(`${BASE}/cancel-fetch`, { method: "POST" })
-  },
+  rescanRepo: (repo: string): Promise<{ ok: boolean; repo?: RepoData; error?: string }> =>
+    send("rescanRepo", { repo }),
 
-  subscribeScan: (rootDir: string, onEvent: (ev: ProgressEvent) => void, onError?: () => void): AbortController => {
-    const controller = new AbortController()
-    const source = new EventSource(`${BASE}/scan?rootDir=${encodeURIComponent(rootDir)}`)
-    source.onmessage = (msg) => {
-      try {
-        onEvent(JSON.parse(msg.data))
-      } catch {}
-    }
-    source.onerror = () => {
-      controller.abort()
-      onError?.()
-    }
-    controller.signal.addEventListener("abort", () => source.close())
-    return controller
-  },
+  checkPull: (repo: string): Promise<{ ok: boolean; repo?: RepoData; error?: string }> =>
+    send("checkPull", { repo }),
 
-  subscribeCommitPush: (repo: string, onEvent: (ev: CommitEvent) => void): AbortController => {
-    const controller = new AbortController()
-    const source = new EventSource(`${BASE}/commit-push?repo=${encodeURIComponent(repo)}`)
-    source.onmessage = (msg) => {
-      try {
-        onEvent(JSON.parse(msg.data))
-      } catch {}
-    }
-    source.onerror = () => controller.abort()
-    controller.signal.addEventListener("abort", () => source.close())
-    return controller
-  },
+  subscribeFetch: (onEvent: (ev: FetchEvent) => void): AbortController =>
+    subscribe("fetchAll", undefined, (data) => {
+      if (data.type === "done") return
+      onEvent(data)
+    }),
 
-  subscribeScanOnly: (rootDir: string, onEvent: (ev: ProgressEvent) => void, onError?: () => void): AbortController => {
-    const controller = new AbortController()
-    const source = new EventSource(`${BASE}/scan-only?rootDir=${encodeURIComponent(rootDir)}`)
-    source.onmessage = (msg) => {
-      try {
-        onEvent(JSON.parse(msg.data))
-      } catch {}
-    }
-    source.onerror = () => {
-      controller.abort()
-      onError?.()
-    }
-    controller.signal.addEventListener("abort", () => source.close())
-    return controller
-  },
+  // Effect wrappers for backward compat with App.tsx
+  pullRepoEffect: (repo: string, machine?: string) =>
+    ({ _tag: "effect", name: "pull", repo, machine } as any),
 
-  rescanRepo: async (repo: string): Promise<{ ok: boolean; repo?: RepoData; error?: string }> => {
-    const params = new URLSearchParams({ repo })
-    const res = await fetch(`${BASE}/rescan-repo?${params}`, { method: "POST" })
-    return res.json()
-  },
+  pushRepoEffect: (repo: string, machine?: string) =>
+    ({ _tag: "effect", name: "push", repo, machine } as any),
 
-  rescanRepoEffect: (repo: string): Effect.Effect<{ ok: boolean; repo?: RepoData; error?: string }, ApiError> => {
-    const params = new URLSearchParams({ repo })
-    return requestJsonEffect(`${BASE}/rescan-repo?${params}`, { method: "POST" })
-  },
+  rescanRepoEffect: (repo: string) =>
+    ({ _tag: "effect", name: "rescanRepo", repo } as any),
 
-  checkPull: async (repo: string): Promise<{ ok: boolean; repo?: RepoData; error?: string }> => {
-    const params = new URLSearchParams({ repo })
-    const res = await fetch(`${BASE}/check-pull?${params}`, { method: "POST" })
-    return res.json()
-  },
+  checkPullEffect: (repo: string) =>
+    ({ _tag: "effect", name: "checkPull", repo } as any),
+}
 
-  checkPullEffect: (repo: string): Effect.Effect<{ ok: boolean; repo?: RepoData; error?: string }, ApiError> => {
-    const params = new URLSearchParams({ repo })
-    return requestJsonEffect(`${BASE}/check-pull?${params}`, { method: "POST" })
+export function runUiEffect<A>(
+  effect: any,
+  handlers: {
+    readonly onSuccess?: (value: A) => void | Promise<void>
+    readonly onFailure?: (error: Error) => void
+    readonly onFinally?: () => void
   },
-
-  subscribeFetch: (onEvent: (ev: FetchEvent) => void): AbortController => {
-    const controller = new AbortController()
-    const source = new EventSource(`${BASE}/fetch`)
-    source.onmessage = (msg) => {
-      try {
-        onEvent(JSON.parse(msg.data))
-      } catch {}
-    }
-    source.onerror = () => controller.abort()
-    controller.signal.addEventListener("abort", () => source.close())
-    return controller
-  },
+): void {
+  if (effect._tag !== "effect") return
+  const { name, ...params } = effect
+  send<A>(name, params)
+    .then(async (result) => { await handlers.onSuccess?.(result) })
+    .catch((e) => handlers.onFailure?.(e instanceof Error ? e : new Error(String(e))))
+    .finally(() => handlers.onFinally?.())
 }
 
 export function repoDataToInfo(r: RepoData): RepoInfo {
   return {
-    path: r.path,
-    name: r.name,
-    machine: r.machine,
-    cached: false,
+    path: r.path, name: r.name, machine: r.machine, cached: false,
     skipUntracked: r.settings?.skipUntracked ?? false,
     skipPullCheck: r.settings?.skipPullCheck ?? false,
     hidden: r.settings?.hidden ?? false,
     status: {
-      branch: r.branch || "",
-      remote: r.remote || null,
-      hasChanges: r.hasChanges,
-      staged: r.staged,
-      unstaged: r.unstaged,
-      untracked: r.untracked,
-      ahead: r.ahead,
-      behind: r.behind,
-      lastCommitTime: r.lastCommitTime,
-      weekCommits: r.weekCommits,
+      branch: r.branch || "", remote: r.remote || null,
+      hasChanges: r.hasChanges, staged: r.staged, unstaged: r.unstaged,
+      untracked: r.untracked, ahead: r.ahead, behind: r.behind,
+      lastCommitTime: r.lastCommitTime, weekCommits: r.weekCommits,
       error: r.error || undefined,
     },
   }
 }
 
 interface GitStatus {
-  branch: string
-  remote: string | null
-  hasChanges: boolean
-  staged: number
-  unstaged: number
-  untracked: number
-  ahead: number
-  behind: number
-  lastCommitTime: number | null
-  weekCommits: number
-  error?: string
+  branch: string; remote: string | null; hasChanges: boolean
+  staged: number; unstaged: number; untracked: number
+  ahead: number; behind: number; lastCommitTime: number | null
+  weekCommits: number; error?: string
 }
 
 export interface RepoInfo {
-  path: string
-  name: string
-  machine: string
-  cached: boolean
+  path: string; name: string; machine: string; cached: boolean
   status: GitStatus
-  skipUntracked?: boolean
-  skipPullCheck?: boolean
-  hidden?: boolean
+  skipUntracked?: boolean; skipPullCheck?: boolean; hidden?: boolean
 }

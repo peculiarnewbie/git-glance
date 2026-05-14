@@ -10,6 +10,7 @@ export default defineConfig({
     port: 8912,
     allowedHosts: ["cachy"],
     proxy: {
+      "/ws": { target: "ws://localhost:3456", ws: true },
       "/health": "http://localhost:3456",
       "/repos": "http://localhost:3456",
       "/scan": "http://localhost:3456",
