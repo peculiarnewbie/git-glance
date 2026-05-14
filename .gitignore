@@ -9,3 +9,7 @@ electrobun-dist/
 
 # Go built binaries
 **/git-glance-serve
+**/git-glance-agent
+
+# Cloudflare assets build output
+packages/cloudflare/dist/

@@ -1,0 +1,20 @@
+{
+  "name": "@git-glance/cloudflare",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "types": "wrangler types"
+  },
+  "dependencies": {
+    "@openauthjs/openauth": "^0.4.3",
+    "jose": "^6.2.3"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^4.20250514.0",
+    "typescript": "^5.7.0",
+    "wrangler": "^4.0.0"
+  }
+}
