@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"encoding/json"
+	"flag"
 	"fmt"
 	"log"
 	"os"
@@ -20,6 +21,12 @@ type AgentConfig struct {
 }
 
 func main() {
+	remotePtr := flag.String("remote", "", "DO WebSocket URL (e.g. wss://git-glance.peculiarnewbie.com/ws)")
+	flag.Parse()
+
+	if *remotePtr != "" {
+		os.Setenv("GLANCE_DO_URL", *remotePtr)
+	}
 
 	homeDir, err := os.UserHomeDir()
 	if err != nil {
