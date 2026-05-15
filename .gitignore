@@ -11,7 +11,8 @@ electrobun-dist/
 **/git-glance-serve
 **/git-glance-agent
 
-# Cloudflare assets build output
+# Cloudflare
+.wrangler/
 packages/cloudflare/dist/
 
 # Alchemy deployment state
