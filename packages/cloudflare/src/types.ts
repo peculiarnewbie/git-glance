@@ -8,10 +8,14 @@ export interface RepoData {
 }
 
 export interface AgentConfig {
-  rootDir: string | null; opencodeModel: string; machines: { name: string; url: string }[]
+  rootDir: string | null; opencodeModel: string
 }
 
 export interface AgentState {
   agentId: string; online: boolean; lastSeen: number | null
   repos: RepoData[]; config: AgentConfig
+}
+
+export interface MachineInfo {
+  name: string; online: boolean; lastSeen: number | null
 }

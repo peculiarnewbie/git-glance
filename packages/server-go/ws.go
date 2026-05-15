@@ -56,9 +56,10 @@ func (c *WSClient) SendDone(id string) error {
 }
 
 type ServerDeps struct {
-	Git    *GitService
-	Cache  *CacheService
-	Remote *RemoteMachineService
+	Git       *GitService
+	Cache     *CacheService
+	Remote    *RemoteMachineService
+	LocalName string
 }
 
 var intPtr = func(i int) *int { return &i }
@@ -138,14 +139,29 @@ func handleGetRepos(client *WSClient, req WSRequest, deps *ServerDeps) {
 		client.SendError(req.ID, err.Error())
 		return
 	}
+	// Migrate old cached repos labelled "local" to the configured local machine name
+	for i := range allRepos {
+		if allRepos[i].Machine == "local" || allRepos[i].Machine == "" {
+			allRepos[i].Machine = deps.LocalName
+		}
+	}
 	statuses := deps.Remote.GetStatuses()
 	scannedDirs := deps.Cache.GetScannedDirs()
+
+	now := time.Now().UnixMilli()
+	localMachine := MachineStatus{
+		Name:     deps.LocalName,
+		URL:      "",
+		Online:   true,
+		LastSeen: &now,
+	}
+	machines := append([]MachineStatus{localMachine}, statuses...)
 
 	client.SendResult(req.ID, ReposResponse{
 		Repos:       allRepos,
 		ScannedAt:   time.Now().UnixMilli(),
 		ScannedDirs: scannedDirs,
-		Machines:    statuses,
+		Machines:    machines,
 	})
 }
 
@@ -166,10 +182,12 @@ func handleGetConfig(client *WSClient, req WSRequest, deps *ServerDeps) {
 		model = "CrofAI/deepseek-v4-flash"
 	}
 
-	machineStatuses := make([]ServerConfigMachine, 0)
-	machinesWithOnline := make([]MachineStatus, 0)
+	now := time.Now().UnixMilli()
+	machinesWithOnline := []MachineStatus{
+		{Name: deps.LocalName, URL: "", Online: true, LastSeen: &now},
+	}
+
 	for _, m := range cfg.Machines {
-		machineStatuses = append(machineStatuses, m)
 		online := false
 		for _, s := range statuses {
 			if s.Name == m.Name {
@@ -177,11 +195,13 @@ func handleGetConfig(client *WSClient, req WSRequest, deps *ServerDeps) {
 				break
 			}
 		}
-		machinesWithOnline = append(machinesWithOnline, MachineStatus{
-			Name:   m.Name,
-			URL:    m.URL,
-			Online: online,
-		})
+		if m.Name != deps.LocalName {
+			machinesWithOnline = append(machinesWithOnline, MachineStatus{
+				Name:   m.Name,
+				URL:    m.URL,
+				Online: online,
+			})
+		}
 	}
 
 	client.SendResult(req.ID, map[string]any{
@@ -240,11 +260,11 @@ func handlePull(client *WSClient, req WSRequest, deps *ServerDeps) {
 		client.SendError(req.ID, `Missing "repo" parameter`)
 		return
 	}
-	if machine == "" {
-		machine = "local"
+	if machine == "" || machine == deps.LocalName {
+		machine = deps.LocalName
 	}
 
-	if machine != "local" {
+	if machine != deps.LocalName {
 		result, err := deps.Remote.ProxyRequest(client.ctx, machine, "POST", "/pull?repo="+repo, "")
 		if err != nil {
 			client.SendError(req.ID, err.Error())
@@ -272,11 +292,11 @@ func handlePush(client *WSClient, req WSRequest, deps *ServerDeps) {
 		client.SendError(req.ID, `Missing "repo" parameter`)
 		return
 	}
-	if machine == "" {
-		machine = "local"
+	if machine == "" || machine == deps.LocalName {
+		machine = deps.LocalName
 	}
 
-	if machine != "local" {
+	if machine != deps.LocalName {
 		result, err := deps.Remote.ProxyRequest(client.ctx, machine, "POST", "/push?repo="+repo, "")
 		if err != nil {
 			client.SendError(req.ID, err.Error())
@@ -310,7 +330,7 @@ func handleRescanRepo(client *WSClient, req WSRequest, deps *ServerDeps) {
 		return
 	}
 
-	updated := makeRepoFromStatus(repo, status)
+	updated := makeRepoFromStatus(repo, status, deps.LocalName)
 	updateRepoInCache(client.ctx, deps, repo)
 	client.SendResult(req.ID, RescanResult{Ok: true, Repo: &updated})
 }
@@ -331,7 +351,7 @@ func handleCheckPull(client *WSClient, req WSRequest, deps *ServerDeps) {
 		return
 	}
 
-	updated := makeRepoFromStatus(repo, status)
+	updated := makeRepoFromStatus(repo, status, deps.LocalName)
 	updateRepoInCache(client.ctx, deps, repo)
 	client.SendResult(req.ID, RescanResult{Ok: true, Repo: &updated})
 }
@@ -389,7 +409,7 @@ func handleScan(client *WSClient, req WSRequest, deps *ServerDeps) {
 	deps.Cache.AddScannedDir(rootDir)
 
 	progressCh := make(chan ScanProgress, 100)
-	go scanAll(client.ctx, deps.Git, deps.Cache, rootDir, "local", progressCh)
+	go scanAll(client.ctx, deps.Git, deps.Cache, rootDir, deps.LocalName, progressCh)
 
 	for p := range progressCh {
 		if err := client.SendProgress(req.ID, p); err != nil {
@@ -412,7 +432,7 @@ func handleScanOnly(client *WSClient, req WSRequest, deps *ServerDeps) {
 	deps.Cache.AddScannedDir(rootDir)
 
 	progressCh := make(chan ScanProgress, 100)
-	go scanOnly(client.ctx, deps.Git, deps.Cache, rootDir, "local", progressCh)
+	go scanOnly(client.ctx, deps.Git, deps.Cache, rootDir, deps.LocalName, progressCh)
 
 	for p := range progressCh {
 		if err := client.SendProgress(req.ID, p); err != nil {
@@ -590,7 +610,7 @@ func handleFetchAll(client *WSClient, req WSRequest, deps *ServerDeps) {
 
 // --- Helpers ---
 
-func makeRepoFromStatus(repoPath string, status *GitStatusResult) GitRepo {
+func makeRepoFromStatus(repoPath string, status *GitStatusResult, localName string) GitRepo {
 	name := filepath.Base(repoPath)
 	now := time.Now().UnixMilli()
 	commitTimeMs := int64(0)
@@ -611,7 +631,7 @@ func makeRepoFromStatus(repoPath string, status *GitStatusResult) GitRepo {
 		LastCommitTime: &commitTimeMs,
 		WeekCommits:    status.WeekCommits,
 		LastScanTime:   &now,
-		Machine:        "local",
+		Machine:        localName,
 	}
 }
 
@@ -645,7 +665,7 @@ func updateRepoInCache(ctx context.Context, deps *ServerDeps, repoPath string) {
 		LastCommitTime: &commitTimeMs,
 		WeekCommits:    status.WeekCommits,
 		LastScanTime:   &now,
-		Machine:        "local",
+		Machine:        deps.LocalName,
 	}
 
 	found := false

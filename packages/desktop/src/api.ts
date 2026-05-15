@@ -1,3 +1,31 @@
+export type AuthState = "loading" | "authenticated" | "unauthenticated"
+
+export interface SessionResponse {
+  user: { email: string }
+}
+
+export async function checkSession(): Promise<{ state: "authenticated"; email: string } | { state: "unauthenticated" } | { state: "local" }> {
+  try {
+    const res = await fetch("/api/session")
+    if (res.ok) {
+      const data: SessionResponse = await res.json()
+      return { state: "authenticated", email: data.user.email }
+    }
+    return { state: "unauthenticated" }
+  } catch {
+    return { state: "local" }
+  }
+}
+
+export function login() {
+  window.location.href = "/api/auth/login"
+}
+
+export async function logout() {
+  await fetch("/api/auth/logout", { method: "POST" })
+  window.location.href = "/"
+}
+
 const BASE = ""
 
 let ws: WebSocket | null = null

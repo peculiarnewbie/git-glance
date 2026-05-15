@@ -8,7 +8,7 @@
     "deploy:cloudflare": "pnpm --filter @git-glance/cloudflare run deploy",
     "build:desktop": "cd packages/desktop && electrobun build --env=stable",
     "dev:cloudflare": "cd packages/cloudflare && mkdir -p dist && pnpm wrangler dev --port 3456",
-    "dev:agent": "GLANCE_SECRET=dev-secret go run -C packages/agent .",
+    "dev:agent": "GLANCE_SECRET=dev-secret GLANCE_DO_URL=ws://localhost:3456/ws go run -C packages/agent .",
     "dev:ui": "pnpm --filter @git-glance/desktop dev",
     "dev:server-go": "go run ./packages/server-go",
     "dev:local": "concurrently -n agent,vite \"go run -C packages/agent . --local\" \"pnpm dev:ui\"",

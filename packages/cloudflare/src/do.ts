@@ -1,6 +1,6 @@
 import { DurableObject } from "cloudflare:workers";
 import type { AuthEnv } from "./auth";
-import type { AgentState, AgentConfig } from "./types";
+import type { AgentState, MachineInfo } from "./types";
 
 const AGENT_TAG = "agent";
 const BROWSER_TAG = "browser";
@@ -12,9 +12,20 @@ export interface Env extends AuthEnv {
 }
 
 export class GitGlanceDO extends DurableObject<Env> {
-  private agentState: AgentState = {
-    agentId: "", online: false, lastSeen: null, repos: [], config: { rootDir: null, opencodeModel: "CrofAI/deepseek-v4-flash", machines: [] },
-  };
+  private agents = new Map<string, AgentState>();
+
+  constructor(ctx: DurableObjectState, env: Env) {
+    super(ctx, env);
+    ctx.blockConcurrencyWhile(async () => {
+      const all = await ctx.storage.kv.list<AgentState>({ prefix: "agent:" });
+      for (const [key, state] of all) {
+        if (state.agentId) {
+          state.online = false;
+          this.agents.set(state.agentId, state);
+        }
+      }
+    });
+  }
 
   async fetch(request: Request): Promise<Response> {
     console.log("[do] fetch", request.url);
@@ -31,22 +42,17 @@ export class GitGlanceDO extends DurableObject<Env> {
       return new Response("Internal error", { status: 500 });
     }
 
-    if (isAgent) {
-      try {
-        const state = this.ctx.storage.kv.get<AgentState>("agent");
-        if (state) {
-          this.agentState = state;
-        }
-      } catch (e) {
-        console.log("[do] storage.kv.get error", e);
+    if (!isAgent) {
+      const machines: MachineInfo[] = [];
+      const allRepos: any[] = [];
+      for (const [agentId, state] of this.agents) {
+        machines.push({ name: agentId, online: state.online, lastSeen: state.lastSeen });
+        if (state.online) allRepos.push(...state.repos);
       }
-      server.send(JSON.stringify({ type: "registered", state: this.agentState }));
-    } else {
       server.send(JSON.stringify({
         type: "init",
-        agentOnline: this.agentState.online,
-        repos: this.agentState.repos,
-        config: this.agentState.config,
+        repos: allRepos,
+        machines,
       }));
     }
 
@@ -65,39 +71,58 @@ export class GitGlanceDO extends DurableObject<Env> {
   }
 
   async webSocketClose(ws: WebSocket) {
-    const { isAgent } = ws.deserializeAttachment() as { isAgent: boolean };
-    if (isAgent) {
-      this.agentState.online = false;
-      this.agentState.lastSeen = Date.now();
-      await this.ctx.storage.kv.put("agent", this.agentState);
-      this.broadcastToBrowsers({ type: "agent_status", online: false });
+    const att = ws.deserializeAttachment() as { isAgent: boolean; agentId?: string };
+    if (att.isAgent && att.agentId) {
+      const agentId = att.agentId;
+      const state = this.agents.get(agentId);
+      if (state) {
+        state.online = false;
+        state.lastSeen = Date.now();
+        await this.ctx.storage.kv.put("agent:" + agentId, state);
+      }
+      this.agents.delete(agentId);
+      this.broadcastAgentStatus();
     }
   }
 
   private async handleAgentMessage(ws: WebSocket, msg: any) {
+    const att = ws.deserializeAttachment() as { isAgent: boolean; agentId?: string };
+
     switch (msg.type) {
       case "register": {
-        this.agentState = {
-          agentId: msg.agentId || "default",
+        const agentId = att?.agentId || msg.agentId || "default";
+        ws.serializeAttachment({ isAgent: true, agentId });
+
+        const state: AgentState = {
+          agentId,
           online: true,
           lastSeen: Date.now(),
           repos: msg.repos || [],
-          config: msg.config || this.agentState.config,
+          config: msg.config || { rootDir: null, opencodeModel: "CrofAI/deepseek-v4-flash" },
         };
-        await this.ctx.storage.kv.put("agent", this.agentState);
-        this.broadcastToBrowsers({ type: "agent_status", online: true });
+        this.agents.set(agentId, state);
+        await this.ctx.storage.kv.put("agent:" + agentId, state);
+        ws.send(JSON.stringify({ type: "registered", agentId }));
+        this.broadcastAgentStatus();
         break;
       }
       case "register_repos": {
-        this.agentState.repos = msg.repos || this.agentState.repos;
-        await this.ctx.storage.kv.put("agent", this.agentState);
+        const agentId = att?.agentId;
+        if (!agentId) break;
+        const state = this.agents.get(agentId);
+        if (state) {
+          state.repos = msg.repos || state.repos;
+          await this.ctx.storage.kv.put("agent:" + agentId, state);
+        }
+        this.broadcastToBrowsers({ type: "repos_update", agentId, repos: msg.repos || [] });
         break;
       }
       case "result":
       case "error":
       case "progress":
       case "done": {
-        this.broadcastToBrowsers(msg);
+        const agentId = att?.agentId;
+        this.broadcastToBrowsers({ ...msg, agentId });
         break;
       }
     }
@@ -105,40 +130,82 @@ export class GitGlanceDO extends DurableObject<Env> {
 
   private async handleBrowserMessage(ws: WebSocket, msg: any) {
     if (msg.action === "getRepos") {
+      const allRepos: any[] = [];
+      const machines: MachineInfo[] = [];
+      for (const [agentId, state] of this.agents) {
+        if (state.online) allRepos.push(...state.repos);
+        machines.push({ name: agentId, online: state.online, lastSeen: state.lastSeen });
+      }
       ws.send(JSON.stringify({
         id: msg.id, type: "result",
-        data: { repos: this.agentState.repos, machines: [], scannedAt: 0, scannedDirs: [] },
+        data: { repos: allRepos, machines, scannedAt: 0, scannedDirs: [] },
       }));
       return;
     }
 
     if (msg.action === "getConfig") {
+      const machines: { name: string; online: boolean }[] = [];
+      let rootDir: string | null = null;
+      let offlineRoot: string | null = null;
+      for (const [agentId, state] of this.agents) {
+        machines.push({ name: agentId, online: state.online });
+        if (state.online && state.config?.rootDir) {
+          if (!rootDir) rootDir = state.config.rootDir;
+        } else if (!state.online && state.config?.rootDir) {
+          if (!offlineRoot) offlineRoot = state.config.rootDir;
+        }
+      }
+      if (!rootDir) rootDir = offlineRoot;
       ws.send(JSON.stringify({
         id: msg.id, type: "result",
-        data: this.agentState.config,
+        data: { opencodeModel: "CrofAI/deepseek-v4-flash", machines, rootDir },
       }));
       return;
     }
 
     if (msg.action === "setConfig") {
-      this.agentState.config = { ...this.agentState.config, ...msg.params };
-      await this.ctx.storage.kv.put("agent", this.agentState);
-      this.forwardToAgent({ type: "execute", id: msg.id, action: msg.action, params: msg.params });
-      return;
-    }
-
-    this.forwardToAgent({ type: "execute", id: msg.id, action: msg.action, params: msg.params });
-  }
-
-  private forwardToAgent(msg: { type: string; id: string; action: string; params?: any }) {
-    const agents = this.ctx.getWebSockets(AGENT_TAG);
-    if (agents.length === 0) {
-      for (const browser of this.ctx.getWebSockets(BROWSER_TAG)) {
-        browser.send(JSON.stringify({ id: msg.id, type: "error", error: "Agent is offline" }));
+      const firstAgent = this.agents.keys().next().value;
+      if (firstAgent) {
+        this.forwardToAgent(firstAgent, { type: "execute", id: msg.id, action: msg.action, params: msg.params });
       }
       return;
     }
-    agents[0].send(JSON.stringify(msg));
+
+    const machine = msg.params?.machine || msg.params?.agentId;
+    console.log("[do] route", { action: msg.action, id: msg.id, machine, agentsSize: this.agents.size, agentIds: [...this.agents.keys()] });
+    if (machine && this.agents.has(machine)) {
+      this.forwardToAgent(machine, { type: "execute", id: msg.id, action: msg.action, params: msg.params });
+    } else if (this.agents.size === 1) {
+      const singleId = this.agents.keys().next().value!;
+      console.log("[do] forwarding to single agent", singleId);
+      this.forwardToAgent(singleId, { type: "execute", id: msg.id, action: msg.action, params: msg.params });
+    } else {
+      console.log("[do] no agent to route to", { machine, agentsSize: this.agents.size });
+      ws.send(JSON.stringify({ id: msg.id, type: "error", error: "No online agent for machine: " + (machine || "unknown") }));
+    }
+  }
+
+  private forwardToAgent(agentId: string, msg: { type: string; id: string; action: string; params?: any }) {
+    const agents = this.ctx.getWebSockets(AGENT_TAG);
+    console.log("[do] forwardToAgent", { agentId, action: msg.action, agentWsCount: agents.length, agentIds: agents.map(w => w.deserializeAttachment()) });
+    for (const ws of agents) {
+      const att = ws.deserializeAttachment() as { isAgent: boolean; agentId?: string };
+      if (att.agentId === agentId) {
+        ws.send(JSON.stringify(msg));
+        return;
+      }
+    }
+    for (const browser of this.ctx.getWebSockets(BROWSER_TAG)) {
+      browser.send(JSON.stringify({ id: msg.id, type: "error", error: "Agent '" + agentId + "' is offline" }));
+    }
+  }
+
+  private broadcastAgentStatus() {
+    const machines: { name: string; online: boolean; lastSeen: number | null }[] = [];
+    for (const [agentId, state] of this.agents) {
+      machines.push({ name: agentId, online: state.online, lastSeen: state.lastSeen });
+    }
+    this.broadcastToBrowsers({ type: "machines", machines });
   }
 
   private broadcastToBrowsers(msg: any) {

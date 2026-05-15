@@ -11,10 +11,19 @@ import (
 	"strings"
 )
 
+func hostnameOrDefault() string {
+	h, err := os.Hostname()
+	if err != nil || h == "" {
+		return "local"
+	}
+	return h
+}
+
 func main() {
 	port := flag.Int("port", 3456, "HTTP server port")
 	staticDir := flag.String("static", "", "Static files directory")
 	devURL := flag.String("dev-url", "", "Dev URL to redirect to (e.g. http://localhost:8912)")
+	machineName := flag.String("name", "", "Local machine name (default: hostname)")
 	flag.Parse()
 
 	if v := os.Getenv("PORT"); v != "" {
@@ -25,6 +34,12 @@ func main() {
 	}
 	if v := os.Getenv("DEV_URL"); v != "" {
 		*devURL = v
+	}
+	if v := os.Getenv("MACHINE_NAME"); v != "" {
+		*machineName = v
+	}
+	if *machineName == "" {
+		*machineName = hostnameOrDefault()
 	}
 
 	homeDir, err := os.UserHomeDir()
@@ -51,7 +66,7 @@ func main() {
 	)
 
 	// Start remote machine polling
-	deps := &ServerDeps{Git: git, Cache: cache, Remote: remote}
+	deps := &ServerDeps{Git: git, Cache: cache, Remote: remote, LocalName: *machineName}
 	go func() {
 		cfg, err := cache.LoadConfig()
 		if err == nil {

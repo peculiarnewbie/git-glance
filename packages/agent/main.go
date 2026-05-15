@@ -22,10 +22,14 @@ type AgentConfig struct {
 
 func main() {
 	remotePtr := flag.String("remote", "", "DO WebSocket URL (e.g. wss://git-glance.peculiarnewbie.com/ws)")
+	rootDirPtr := flag.String("root", "", "Root directory to scan")
 	flag.Parse()
 
 	if *remotePtr != "" {
 		os.Setenv("GLANCE_DO_URL", *remotePtr)
+	}
+	if *rootDirPtr != "" {
+		os.Setenv("GLANCE_ROOT_DIR", *rootDirPtr)
 	}
 
 	homeDir, err := os.UserHomeDir()
@@ -78,6 +82,8 @@ func promptMissing(cfg AgentConfig, path string) AgentConfig {
 		fmt.Print("Enter root directory to scan (e.g. /home/bolt/git): ")
 		scanner.Scan()
 		cfg.RootDir = strings.TrimSpace(scanner.Text())
+	} else {
+		fmt.Printf("Root directory: %s\n", cfg.RootDir)
 	}
 
 	if err := os.MkdirAll(filepath.Dir(path), 0755); err == nil {
@@ -97,6 +103,7 @@ func readAgentConfig(path string) AgentConfig {
 			DOURL:   os.Getenv("GLANCE_DO_URL"),
 			Secret:  os.Getenv("GLANCE_SECRET"),
 			AgentID: os.Getenv("GLANCE_AGENT_ID"),
+			RootDir: os.Getenv("GLANCE_ROOT_DIR"),
 		}
 		if defaultCfg.DOURL == "" {
 			defaultCfg.DOURL = "ws://localhost:3456/ws"
@@ -115,6 +122,9 @@ func readAgentConfig(path string) AgentConfig {
 	}
 	if v := os.Getenv("GLANCE_AGENT_ID"); v != "" {
 		cfg.AgentID = v
+	}
+	if v := os.Getenv("GLANCE_ROOT_DIR"); v != "" {
+		cfg.RootDir = v
 	}
 	return cfg
 }
@@ -148,6 +158,17 @@ func (a *Agent) Run() {
 
 		repos, _ := a.cache.Load()
 		config := a.readConfig()
+
+		changed := false
+		for i, r := range repos {
+			if r.Machine != "" && r.Machine != a.cfg.AgentID {
+				repos[i].Machine = a.cfg.AgentID
+				changed = true
+			}
+		}
+		if changed {
+			a.cache.Save(repos)
+		}
 
 		err = ws.Register(a.cfg.AgentID, repos, config)
 		if err != nil {

@@ -1,6 +1,6 @@
 import { createSignal, For, Show, createMemo, onMount, onCleanup } from "solid-js";
-import { api, repoDataToInfo, runUiEffect } from "./api";
-import type { RepoInfo } from "./api";
+import { api, repoDataToInfo, runUiEffect, checkSession, login, logout } from "./api";
+import type { RepoInfo, AuthState } from "./api";
 
 type SortKey = "last-commit" | "week-activity" | "name" | "pull-count";
 
@@ -138,6 +138,8 @@ export default function App() {
   const [showDirModal, setShowDirModal] = createSignal(false);
   const [dirInputValue, setDirInputValue] = createSignal("");
   const [dirInputError, setDirInputError] = createSignal<string | null>(null);
+  const [authState, setAuthState] = createSignal<AuthState>("loading");
+  const [userEmail, setUserEmail] = createSignal<string | null>(null);
 
   let scanController: AbortController | null = null;
   let commitController: AbortController | null = null;
@@ -170,6 +172,18 @@ export default function App() {
   }
 
   onMount(async () => {
+    const session = await checkSession();
+    if (session.state === "unauthenticated") {
+      setAuthState("unauthenticated");
+      return;
+    }
+    if (session.state === "authenticated") {
+      setAuthState("authenticated");
+      setUserEmail(session.email);
+    } else {
+      setAuthState("authenticated");
+    }
+
     const cfg = await api.getConfig();
     if (cfg) {
       setConfig({ opencodeModel: cfg.opencodeModel, machines: cfg.machines?.map(m => ({ name: m.name, url: m.url })) });
@@ -766,10 +780,10 @@ export default function App() {
           <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-2">
             <For each={props.repos}>{(repo) => <RepoCard repo={repo} />}</For>
           </div>
-        </Show>
-      </div>
-    );
-  }
+      </Show>
+    </div>
+  );
+}
 
   return (
     <div class="min-h-screen bg-[#09090b] text-zinc-300">
@@ -822,6 +836,17 @@ export default function App() {
                   <span>⇣ Check Pull</span>
                 </button>
               </Show>
+            </Show>
+            <Show when={authState() === "authenticated" && userEmail()}>
+              <div class="flex items-center gap-2 mr-1">
+                <span class="text-[11px] text-zinc-500 truncate max-w-[140px]">{userEmail()}</span>
+                <button
+                  onClick={() => logout()}
+                  class="px-2 py-1 text-[11px] text-zinc-600 hover:text-zinc-400 hover:bg-zinc-900 rounded transition-colors"
+                >
+                  Sign out
+                </button>
+              </div>
             </Show>
             <div class="relative">
               <button
@@ -1126,6 +1151,20 @@ export default function App() {
                 Select
               </button>
             </div>
+          </div>
+        </div>
+      </Show>
+      <Show when={authState() === "unauthenticated"}>
+        <div class="fixed inset-0 z-50 flex items-center justify-center bg-[#09090b]">
+          <div class="text-center">
+            <h1 class="text-lg font-semibold text-zinc-100 mb-2">Git Explorer</h1>
+            <p class="text-[13px] text-zinc-500 mb-6">Sign in to continue</p>
+            <button
+              onClick={() => login()}
+              class="px-4 py-2 bg-zinc-800 hover:bg-zinc-700 border border-zinc-700 rounded-lg text-[13px] font-medium text-zinc-300 transition-colors"
+            >
+              Sign in with Google
+            </button>
           </div>
         </div>
       </Show>

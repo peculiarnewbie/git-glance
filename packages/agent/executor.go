@@ -122,10 +122,11 @@ func (e *Executor) handleScan(id, action string, params map[string]any) {
 	progressCh := make(chan ScanProgress, 100)
 	ctx := context.Background()
 
+	machineName := e.cfg.AgentID
 	if action == "scan" {
-		go scanAll(ctx, e.git, e.cache, rootDir, "local", progressCh)
+		go scanAll(ctx, e.git, e.cache, rootDir, machineName, progressCh)
 	} else {
-		go scanOnly(ctx, e.git, e.cache, rootDir, "local", progressCh)
+		go scanOnly(ctx, e.git, e.cache, rootDir, machineName, progressCh)
 	}
 
 	for p := range progressCh {
@@ -196,7 +197,7 @@ func (e *Executor) handleFetchAll(id string) {
 		if status != nil {
 			a = &status.Ahead
 			b = &status.Behind
-			updateRepoInCache(e.git, e.cache, repo.Path)
+			updateRepoInCache(e.git, e.cache, repo.Path, e.cfg.AgentID)
 		}
 		sendProgress("repo", i+1, total, &repo.Path, &name, a, b, repo.Branch, nil)
 	}
@@ -302,7 +303,7 @@ func (e *Executor) handleCommitPush(id string, params map[string]any) {
 		return
 	}
 
-	updateRepoInCache(e.git, e.cache, repo)
+	updateRepoInCache(e.git, e.cache, repo, e.cfg.AgentID)
 	send("done", map[string]any{"subject": commitMsg.Subject, "body": commitMsg.Body})
 	e.sender.SendReposUpdate(getLocalRepos(e.cache))
 	e.sender.SendDone(id)
@@ -322,7 +323,7 @@ func (e *Executor) handlePull(id string, params map[string]any) {
 		return
 	}
 
-	updateRepoInCache(e.git, e.cache, repo)
+	updateRepoInCache(e.git, e.cache, repo, e.cfg.AgentID)
 	e.sender.SendReposUpdate(getLocalRepos(e.cache))
 	e.sender.SendResult(id, PullPushResult{Ok: true, Output: &output})
 }
@@ -341,7 +342,7 @@ func (e *Executor) handlePush(id string, params map[string]any) {
 		return
 	}
 
-	updateRepoInCache(e.git, e.cache, repo)
+	updateRepoInCache(e.git, e.cache, repo, e.cfg.AgentID)
 	e.sender.SendReposUpdate(getLocalRepos(e.cache))
 	e.sender.SendResult(id, PullPushResult{Ok: true, Output: &output})
 }
@@ -360,8 +361,8 @@ func (e *Executor) handleRescanRepo(id string, params map[string]any) {
 		return
 	}
 
-	updated := makeRepoFromStatus(repo, status)
-	updateRepoInCache(e.git, e.cache, repo)
+	updated := makeRepoFromStatus(repo, status, e.cfg.AgentID)
+	updateRepoInCache(e.git, e.cache, repo, e.cfg.AgentID)
 	e.sender.SendResult(id, RescanResult{Ok: true, Repo: &updated})
 }
 
@@ -381,8 +382,8 @@ func (e *Executor) handleCheckPull(id string, params map[string]any) {
 		return
 	}
 
-	updated := makeRepoFromStatus(repo, status)
-	updateRepoInCache(e.git, e.cache, repo)
+	updated := makeRepoFromStatus(repo, status, e.cfg.AgentID)
+	updateRepoInCache(e.git, e.cache, repo, e.cfg.AgentID)
 	e.sender.SendResult(id, RescanResult{Ok: true, Repo: &updated})
 }
 
@@ -450,7 +451,7 @@ func (e *Executor) handleSetConfig(id string, params map[string]any) {
 
 // --- Helpers ---
 
-func makeRepoFromStatus(repoPath string, status *GitStatusResult) GitRepo {
+func makeRepoFromStatus(repoPath string, status *GitStatusResult, machineName string) GitRepo {
 	name := filepath.Base(repoPath)
 	now := time.Now().UnixMilli()
 	commitTimeMs := int64(0)
@@ -471,11 +472,11 @@ func makeRepoFromStatus(repoPath string, status *GitStatusResult) GitRepo {
 		LastCommitTime: &commitTimeMs,
 		WeekCommits:    status.WeekCommits,
 		LastScanTime:   &now,
-		Machine:        "local",
+		Machine:        machineName,
 	}
 }
 
-func updateRepoInCache(git *GitService, cache *CacheService, repoPath string) {
+func updateRepoInCache(git *GitService, cache *CacheService, repoPath string, machineName string) {
 	ctx := context.Background()
 	status, err := git.GetStatus(ctx, repoPath)
 	if err != nil {
@@ -492,6 +493,7 @@ func updateRepoInCache(git *GitService, cache *CacheService, repoPath string) {
 	if status.LastCommitTime != nil {
 		commitTimeMs = *status.LastCommitTime * 1000
 	}
+
 	updated := GitRepo{
 		Name:           name,
 		Path:           repoPath,
@@ -506,7 +508,7 @@ func updateRepoInCache(git *GitService, cache *CacheService, repoPath string) {
 		LastCommitTime: &commitTimeMs,
 		WeekCommits:    status.WeekCommits,
 		LastScanTime:   &now,
-		Machine:        "local",
+		Machine:        machineName,
 	}
 
 	found := false
