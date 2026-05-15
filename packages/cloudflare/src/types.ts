@@ -12,7 +12,7 @@ export interface AgentConfig {
 }
 
 export interface AgentState {
-  agentId: string; online: boolean; lastSeen: number | null
+  agentId: string; lastSeen: number | null
   repos: RepoData[]; config: AgentConfig
 }
 

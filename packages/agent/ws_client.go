@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"net/url"
 	"sync"
 	"time"
@@ -51,10 +52,12 @@ func (c *WSClient) Register(agentId string, repos []GitRepo, config PersistedCon
 }
 
 func (c *WSClient) SendResult(id string, data any) error {
+	log.Printf("[exec] id=%s ok", id)
 	return c.sendJSON(map[string]any{"type": "result", "id": id, "data": data})
 }
 
 func (c *WSClient) SendError(id string, errMsg string) error {
+	log.Printf("[exec] id=%s error: %s", id, errMsg)
 	return c.sendJSON(map[string]any{"type": "error", "id": id, "error": errMsg})
 }
 

@@ -1,3 +1,15 @@
+import { Effect } from "effect"
+
+function logInfo(msg: string, extra?: Record<string, unknown>) {
+  Effect.runFork(extra ? Effect.annotateLogs(Effect.logInfo(msg), extra) : Effect.logInfo(msg))
+}
+function logWarn(msg: string, extra?: Record<string, unknown>) {
+  Effect.runFork(extra ? Effect.annotateLogs(Effect.logWarning(msg), extra) : Effect.logWarning(msg))
+}
+function logError(msg: string, extra?: Record<string, unknown>) {
+  Effect.runFork(extra ? Effect.annotateLogs(Effect.logError(msg), extra) : Effect.logError(msg))
+}
+
 export type AuthState = "loading" | "authenticated" | "unauthenticated"
 
 export interface SessionResponse {
@@ -31,6 +43,8 @@ const BASE = ""
 let ws: WebSocket | null = null
 let pending = new Map<string, { resolve: (v: any) => void; reject: (e: any) => void }>()
 let subscriptions = new Map<string, Set<(data: any) => void>>()
+let machineHandlers = new Set<(machines: { name: string; online: boolean; lastSeen: number | null }[]) => void>()
+let reposUpdateHandlers = new Set<(repos: any[], agentId: string) => void>()
 let idCounter = 0
 
 let connectPromise: Promise<void> | null = null
@@ -42,20 +56,20 @@ function connect(): Promise<void> {
     const protocol = location.protocol === "https:" ? "wss:" : "ws:"
     const host = location.host
     const url = `${protocol}//${host}/ws`
-    console.log("[ws] connecting to", url)
+    logInfo("[ws] connecting", { url })
     ws = new WebSocket(url)
     ws.onopen = () => {
-      console.log("[ws] connected")
+      logInfo("[ws] connected")
       connectPromise = null
       resolve()
     }
     ws.onerror = (ev) => {
-      console.log("[ws] error", ev)
+      logError("[ws] connection error")
       connectPromise = null
       reject(new Error("WebSocket connection failed"))
     }
     ws.onclose = (ev) => {
-      console.log("[ws] closed code=%d reason=%s", ev.code, ev.reason)
+      logWarn("[ws] closed", { code: ev.code, reason: ev.reason })
       connectPromise = null
       ws = null
       for (const [, p] of pending) p.reject(new Error("Connection closed"))
@@ -64,11 +78,15 @@ function connect(): Promise<void> {
     ws.onmessage = (msg) => {
       try {
         const { id, type, data, error } = JSON.parse(msg.data)
-        console.log("[ws] recv", { id, type })
+        const recvExtra: Record<string, unknown> = { id, type }
+        if (error !== undefined) recvExtra.error = error
+        if (data !== undefined && type !== "result") recvExtra.data = data
+        logInfo("[ws] recv", recvExtra)
         if (type === "result") {
           const p = pending.get(id)
           if (p) { p.resolve(data); pending.delete(id) }
         } else if (type === "error") {
+          logError("[ws] recv error", { id, error, data })
           const p = pending.get(id)
           if (p) { p.reject(new Error(error)); pending.delete(id) }
           const subs = subscriptions.get(id)
@@ -78,8 +96,12 @@ function connect(): Promise<void> {
         } else if (type === "done") {
           subscriptions.get(id)?.forEach(fn => fn({ type: "done" }))
           subscriptions.delete(id)
+        } else if (type === "machines") {
+          machineHandlers.forEach(fn => fn(data?.machines ?? data))
+        } else if (type === "repos_update") {
+          reposUpdateHandlers.forEach(fn => fn(data?.repos ?? data, data?.agentId))
         }
-      } catch (e) { console.log("[ws] parse error", e) }
+      } catch (e) { logError("[ws] parse error", { error: String(e) }) }
     }
   })
   return connectPromise
@@ -105,7 +127,7 @@ function subscribe(action: string, params: Record<string, any> | undefined, onEv
     controller.signal.addEventListener("abort", () => {
       subscriptions.delete(id)
       const cancelAction = "cancel" + action.charAt(0).toUpperCase() + action.slice(1)
-      send(cancelAction).catch(() => {})
+      send(cancelAction).catch((e) => logError("[ws] cancel failed", { action: cancelAction, error: String(e) }))
     })
   })
   return controller
@@ -199,6 +221,16 @@ export const api = {
       if (data.type === "done") return
       onEvent(data)
     }),
+
+  onMachineStatus: (fn: (machines: { name: string; online: boolean; lastSeen: number | null }[]) => void) => {
+    machineHandlers.add(fn)
+    return () => machineHandlers.delete(fn)
+  },
+
+  onReposUpdate: (fn: (repos: any[], agentId: string) => void) => {
+    reposUpdateHandlers.add(fn)
+    return () => reposUpdateHandlers.delete(fn)
+  },
 
   // Effect wrappers for backward compat with App.tsx
   pullRepoEffect: (repo: string, machine?: string) =>

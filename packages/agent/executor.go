@@ -55,6 +55,7 @@ func (e *Executor) Run() {
 }
 
 func (e *Executor) handle(id, action string, params map[string]any) {
+	log.Printf("[exec] %s id=%s", action, id)
 	switch action {
 	case "getRepos":
 		e.handleGetRepos(id)

@@ -1,6 +1,17 @@
 import { DurableObject } from "cloudflare:workers";
 import type { AuthEnv } from "./auth";
 import type { AgentState, MachineInfo } from "./types";
+import { Effect } from "effect";
+
+function logInfo(msg: string, extra?: Record<string, unknown>) {
+  Effect.runFork(extra ? Effect.annotateLogs(Effect.logInfo(msg), extra) : Effect.logInfo(msg))
+}
+function logWarn(msg: string, extra?: Record<string, unknown>) {
+  Effect.runFork(extra ? Effect.annotateLogs(Effect.logWarning(msg), extra) : Effect.logWarning(msg))
+}
+function logError(msg: string, extra?: Record<string, unknown>) {
+  Effect.runFork(extra ? Effect.annotateLogs(Effect.logError(msg), extra) : Effect.logError(msg))
+}
 
 const AGENT_TAG = "agent";
 const BROWSER_TAG = "browser";
@@ -12,42 +23,44 @@ export interface Env extends AuthEnv {
 }
 
 export class GitGlanceDO extends DurableObject<Env> {
-  private agents = new Map<string, AgentState>();
-
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
-    ctx.blockConcurrencyWhile(async () => {
-      const all = await ctx.storage.kv.list<AgentState>({ prefix: "agent:" });
-      for (const [key, state] of all) {
-        if (state.agentId) {
-          state.online = false;
-          this.agents.set(state.agentId, state);
-        }
-      }
-    });
+  }
+
+  private getOnlineAgentIds(): Set<string> {
+    const ids = new Set<string>();
+    for (const ws of this.ctx.getWebSockets(AGENT_TAG)) {
+      const att = ws.deserializeAttachment() as { agentId?: string };
+      if (att.agentId) ids.add(att.agentId);
+    }
+    return ids;
   }
 
   async fetch(request: Request): Promise<Response> {
-    console.log("[do] fetch", request.url);
-    const [client, server] = Object.values(new WebSocketPair());
     const url = new URL(request.url);
     const isAgent = url.searchParams.has("token");
+    logInfo("[do] fetch", { url: request.url, isAgent });
+
+    const [client, server] = Object.values(new WebSocketPair());
 
     server.serializeAttachment({ isAgent });
 
     try {
       this.ctx.acceptWebSocket(server, isAgent ? [AGENT_TAG] : [BROWSER_TAG]);
     } catch (e) {
-      console.log("[do] acceptWebSocket error", e);
+      logError("[do] acceptWebSocket error", { error: String(e) });
       return new Response("Internal error", { status: 500 });
     }
 
     if (!isAgent) {
+      const onlineIds = this.getOnlineAgentIds();
       const machines: MachineInfo[] = [];
       const allRepos: any[] = [];
-      for (const [agentId, state] of this.agents) {
-        machines.push({ name: agentId, online: state.online, lastSeen: state.lastSeen });
-        if (state.online) allRepos.push(...state.repos);
+      const all = new Map(await this.ctx.storage.kv.list<AgentState>({ prefix: "agent:" }));
+      for (const [, state] of all) {
+        const online = onlineIds.has(state.agentId);
+        machines.push({ name: state.agentId, online, lastSeen: state.lastSeen });
+        if (online) allRepos.push(...state.repos);
       }
       server.send(JSON.stringify({
         type: "init",
@@ -60,7 +73,13 @@ export class GitGlanceDO extends DurableObject<Env> {
   }
 
   async webSocketMessage(ws: WebSocket, message: string | ArrayBuffer) {
-    const msg = JSON.parse(message as string);
+    let msg: any;
+    try {
+      msg = JSON.parse(message as string);
+    } catch (e) {
+      logError("[do] invalid JSON from WS", { error: String(e) });
+      return;
+    }
     const { isAgent } = ws.deserializeAttachment() as { isAgent: boolean };
 
     if (isAgent) {
@@ -74,13 +93,13 @@ export class GitGlanceDO extends DurableObject<Env> {
     const att = ws.deserializeAttachment() as { isAgent: boolean; agentId?: string };
     if (att.isAgent && att.agentId) {
       const agentId = att.agentId;
-      const state = this.agents.get(agentId);
+      const remaining = this.ctx.getWebSockets(AGENT_TAG).length;
+      logWarn("[do] agent disconnected", { agentId, remainingAgents: remaining });
+      const state = await this.ctx.storage.kv.get<AgentState>("agent:" + agentId);
       if (state) {
-        state.online = false;
         state.lastSeen = Date.now();
         await this.ctx.storage.kv.put("agent:" + agentId, state);
       }
-      this.agents.delete(agentId);
       this.broadcastAgentStatus();
     }
   }
@@ -92,15 +111,14 @@ export class GitGlanceDO extends DurableObject<Env> {
       case "register": {
         const agentId = att?.agentId || msg.agentId || "default";
         ws.serializeAttachment({ isAgent: true, agentId });
+        logInfo("[do] agent registered", { agentId, repoCount: msg.repos?.length });
 
         const state: AgentState = {
           agentId,
-          online: true,
           lastSeen: Date.now(),
           repos: msg.repos || [],
           config: msg.config || { rootDir: null, opencodeModel: "CrofAI/deepseek-v4-flash" },
         };
-        this.agents.set(agentId, state);
         await this.ctx.storage.kv.put("agent:" + agentId, state);
         ws.send(JSON.stringify({ type: "registered", agentId }));
         this.broadcastAgentStatus();
@@ -109,7 +127,7 @@ export class GitGlanceDO extends DurableObject<Env> {
       case "register_repos": {
         const agentId = att?.agentId;
         if (!agentId) break;
-        const state = this.agents.get(agentId);
+        const state = await this.ctx.storage.kv.get<AgentState>("agent:" + agentId);
         if (state) {
           state.repos = msg.repos || state.repos;
           await this.ctx.storage.kv.put("agent:" + agentId, state);
@@ -118,10 +136,15 @@ export class GitGlanceDO extends DurableObject<Env> {
         break;
       }
       case "result":
-      case "error":
       case "progress":
       case "done": {
         const agentId = att?.agentId;
+        this.broadcastToBrowsers({ ...msg, agentId });
+        break;
+      }
+      case "error": {
+        const agentId = att?.agentId;
+        logError("[do] agent error forwarded", { agentId, id: msg.id, error: msg.error, action: msg.action });
         this.broadcastToBrowsers({ ...msg, agentId });
         break;
       }
@@ -130,11 +153,14 @@ export class GitGlanceDO extends DurableObject<Env> {
 
   private async handleBrowserMessage(ws: WebSocket, msg: any) {
     if (msg.action === "getRepos") {
+      const onlineIds = this.getOnlineAgentIds();
       const allRepos: any[] = [];
       const machines: MachineInfo[] = [];
-      for (const [agentId, state] of this.agents) {
-        if (state.online) allRepos.push(...state.repos);
-        machines.push({ name: agentId, online: state.online, lastSeen: state.lastSeen });
+      const all = new Map(await this.ctx.storage.kv.list<AgentState>({ prefix: "agent:" }));
+      for (const [, state] of all) {
+        const online = onlineIds.has(state.agentId);
+        if (online) allRepos.push(...state.repos);
+        machines.push({ name: state.agentId, online, lastSeen: state.lastSeen });
       }
       ws.send(JSON.stringify({
         id: msg.id, type: "result",
@@ -144,14 +170,17 @@ export class GitGlanceDO extends DurableObject<Env> {
     }
 
     if (msg.action === "getConfig") {
+      const onlineIds = this.getOnlineAgentIds();
       const machines: { name: string; online: boolean }[] = [];
       let rootDir: string | null = null;
       let offlineRoot: string | null = null;
-      for (const [agentId, state] of this.agents) {
-        machines.push({ name: agentId, online: state.online });
-        if (state.online && state.config?.rootDir) {
+      const all = new Map(await this.ctx.storage.kv.list<AgentState>({ prefix: "agent:" }));
+      for (const [, state] of all) {
+        const online = onlineIds.has(state.agentId);
+        machines.push({ name: state.agentId, online });
+        if (online && state.config?.rootDir) {
           if (!rootDir) rootDir = state.config.rootDir;
-        } else if (!state.online && state.config?.rootDir) {
+        } else if (!online && state.config?.rootDir) {
           if (!offlineRoot) offlineRoot = state.config.rootDir;
         }
       }
@@ -164,30 +193,30 @@ export class GitGlanceDO extends DurableObject<Env> {
     }
 
     if (msg.action === "setConfig") {
-      const firstAgent = this.agents.keys().next().value;
-      if (firstAgent) {
-        this.forwardToAgent(firstAgent, { type: "execute", id: msg.id, action: msg.action, params: msg.params });
+      const agents = this.ctx.getWebSockets(AGENT_TAG);
+      if (agents.length > 0) {
+        const att = agents[0].deserializeAttachment() as { agentId?: string };
+        if (att.agentId) {
+          this.forwardToAgent(att.agentId, { type: "execute", id: msg.id, action: msg.action, params: msg.params });
+          return;
+        }
       }
+      ws.send(JSON.stringify({ id: msg.id, type: "error", error: "No online agent to configure" }));
       return;
     }
 
     const machine = msg.params?.machine || msg.params?.agentId;
-    console.log("[do] route", { action: msg.action, id: msg.id, machine, agentsSize: this.agents.size, agentIds: [...this.agents.keys()] });
-    if (machine && this.agents.has(machine)) {
+    logInfo("[do] route", { action: msg.action, id: msg.id, machine });
+    if (machine) {
       this.forwardToAgent(machine, { type: "execute", id: msg.id, action: msg.action, params: msg.params });
-    } else if (this.agents.size === 1) {
-      const singleId = this.agents.keys().next().value!;
-      console.log("[do] forwarding to single agent", singleId);
-      this.forwardToAgent(singleId, { type: "execute", id: msg.id, action: msg.action, params: msg.params });
     } else {
-      console.log("[do] no agent to route to", { machine, agentsSize: this.agents.size });
-      ws.send(JSON.stringify({ id: msg.id, type: "error", error: "No online agent for machine: " + (machine || "unknown") }));
+      ws.send(JSON.stringify({ id: msg.id, type: "error", error: `No machine specified for action: ${msg.action}` }));
     }
   }
 
   private forwardToAgent(agentId: string, msg: { type: string; id: string; action: string; params?: any }) {
     const agents = this.ctx.getWebSockets(AGENT_TAG);
-    console.log("[do] forwardToAgent", { agentId, action: msg.action, agentWsCount: agents.length, agentIds: agents.map(w => w.deserializeAttachment()) });
+    logInfo("[do] forwardToAgent", { agentId, action: msg.action, id: msg.id, agentWsCount: agents.length });
     for (const ws of agents) {
       const att = ws.deserializeAttachment() as { isAgent: boolean; agentId?: string };
       if (att.agentId === agentId) {
@@ -195,15 +224,19 @@ export class GitGlanceDO extends DurableObject<Env> {
         return;
       }
     }
+    const errMsg = `Agent '${agentId}' is offline (action: ${msg.action}, id: ${msg.id})`;
+    logError("[do] agent not connected", { agentId, action: msg.action, id: msg.id, agentWsCount: agents.length });
     for (const browser of this.ctx.getWebSockets(BROWSER_TAG)) {
-      browser.send(JSON.stringify({ id: msg.id, type: "error", error: "Agent '" + agentId + "' is offline" }));
+      browser.send(JSON.stringify({ id: msg.id, type: "error", error: errMsg }));
     }
   }
 
-  private broadcastAgentStatus() {
+  private async broadcastAgentStatus() {
+    const onlineIds = this.getOnlineAgentIds();
     const machines: { name: string; online: boolean; lastSeen: number | null }[] = [];
-    for (const [agentId, state] of this.agents) {
-      machines.push({ name: agentId, online: state.online, lastSeen: state.lastSeen });
+    const all = new Map(await this.ctx.storage.kv.list<AgentState>({ prefix: "agent:" }));
+    for (const [, state] of all) {
+      machines.push({ name: state.agentId, online: onlineIds.has(state.agentId), lastSeen: state.lastSeen });
     }
     this.broadcastToBrowsers({ type: "machines", machines });
   }
