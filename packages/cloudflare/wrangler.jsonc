@@ -4,6 +4,7 @@
   "compatibility_date": "2025-04-01",
   "assets": {
     "directory": "./dist",
+    "binding": "ASSETS",
     "not_found_handling": "single-page-application"
   },
   "vars": {

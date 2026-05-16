@@ -21,6 +21,8 @@ export default {
           return auth.logout();
         if (url.pathname === "/api/session" && request.method === "GET")
           return await auth.sessionEndpoint(request);
+      } else if (url.pathname === "/api/session" && request.method === "GET") {
+        return Response.json({ user: { email: "dev@localhost" } });
       }
 
       if (url.pathname === "/ws") {
