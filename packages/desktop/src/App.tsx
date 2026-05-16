@@ -128,6 +128,7 @@ export default function App() {
   const [commitBusy, setCommitBusy] = createSignal<string | null>(null);
   const [commitPhase, setCommitPhase] = createSignal<string>("");
   const [commitError, setCommitError] = createSignal<string | null>(null);
+  const [scanError, setScanError] = createSignal<string | null>(null);
   const [fetching, setFetching] = createSignal(false);
   const [fetchProgress, setFetchProgress] = createSignal<{ current: number; total: number }>({ current: 0, total: 0 });
   const [fetchCurrentRepo, setFetchCurrentRepo] = createSignal<string>("");
@@ -242,11 +243,15 @@ export default function App() {
     scanController?.abort();
     repoBuffer = [];
     if (flushTimer !== null) { clearTimeout(flushTimer); flushTimer = null; }
+    const d = dir();
+    if (!d) {
+      setScanError("Select a directory before scanning.");
+      return;
+    }
+
+    setScanError(null);
     setScanning(true);
     setProgress({ current: 0, total: 0 });
-
-    const d = dir();
-    if (!d) return;
 
     scanController = api.subscribeScanOnly(d, (data) => {
       if (data.phase === "discovering") {
@@ -267,7 +272,8 @@ export default function App() {
         flushRepoBuffer();
         setScanning(false);
       }
-    }, () => {
+    }, (error) => {
+      setScanError(error?.message || "Scan failed before reaching the agent.");
       setScanning(false);
       if (flushTimer !== null) { clearTimeout(flushTimer); flushTimer = null; }
       flushRepoBuffer();
@@ -310,7 +316,6 @@ export default function App() {
   }
 
   function cancelScan() {
-    api.cancelScan();
     scanController?.abort();
     if (flushTimer !== null) { clearTimeout(flushTimer); flushTimer = null; }
     flushRepoBuffer();
@@ -318,7 +323,6 @@ export default function App() {
   }
 
   function cancelFetchAll() {
-    api.cancelFetch();
     fetchController?.abort();
     setFetching(false);
     setFetchProgress({ current: 0, total: 0 });
@@ -388,7 +392,6 @@ export default function App() {
   }
 
   function handleCancelCommit() {
-    api.cancelCommit();
     commitController?.abort();
     setCommitBusy(null);
     setCommitPhase("");
@@ -788,11 +791,12 @@ export default function App() {
   return (
     <div class="min-h-screen bg-[#09090b] text-zinc-300">
       <div class="w-full px-6 py-6">
-        <div class="flex items-center justify-between mb-5">
-          <div>
-            <h1 class="text-sm font-semibold text-zinc-100 tracking-tight">Git Explorer</h1>
-            <p class="text-[11px] text-zinc-600 mt-0.5">Scan directories for git repositories</p>
-          </div>
+        <div class="mb-5">
+          <div class="flex items-center justify-between">
+            <div>
+              <h1 class="text-sm font-semibold text-zinc-100 tracking-tight">Git Explorer</h1>
+              <p class="text-[11px] text-zinc-600 mt-0.5">Scan directories for git repositories</p>
+            </div>
           <div class="flex items-center gap-2">
             <button
               onClick={handleSelect}
@@ -941,6 +945,12 @@ export default function App() {
               </Show>
             </div>
           </div>
+          </div>
+          <Show when={scanError()}>
+            <div class="mt-3 text-[11px] text-red-400/80 bg-red-950/20 border border-red-900/40 rounded-lg px-3 py-2">
+              {scanError()}
+            </div>
+          </Show>
         </div>
 
         <Show when={machines().length > 0}>

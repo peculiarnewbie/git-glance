@@ -16,6 +16,12 @@ function logError(msg: string, extra?: Record<string, unknown>) {
 const AGENT_TAG = "agent";
 const BROWSER_TAG = "browser";
 
+type RequestOwner = {
+  browser: WebSocket;
+  agentId: string;
+  action: string;
+};
+
 export interface Env extends AuthEnv {
   GIT_GLANCE_DO: DurableObjectNamespace<GitGlanceDO>;
   GLANCE_SECRET?: string;
@@ -23,6 +29,8 @@ export interface Env extends AuthEnv {
 }
 
 export class GitGlanceDO extends DurableObject<Env> {
+  private readonly requests = new Map<string, RequestOwner>();
+
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
   }
@@ -34,6 +42,14 @@ export class GitGlanceDO extends DurableObject<Env> {
       if (att.agentId) ids.add(att.agentId);
     }
     return ids;
+  }
+
+  private getFirstOnlineAgentId(): string | null {
+    for (const ws of this.ctx.getWebSockets(AGENT_TAG)) {
+      const att = ws.deserializeAttachment() as { agentId?: string };
+      if (att.agentId) return att.agentId;
+    }
+    return null;
   }
 
   async fetch(request: Request): Promise<Response> {
@@ -91,6 +107,13 @@ export class GitGlanceDO extends DurableObject<Env> {
 
   async webSocketClose(ws: WebSocket) {
     const att = ws.deserializeAttachment() as { isAgent: boolean; agentId?: string };
+    if (!att.isAgent) {
+      for (const [id, owner] of this.requests) {
+        if (owner.browser === ws) this.requests.delete(id);
+      }
+      return;
+    }
+
     if (att.isAgent && att.agentId) {
       const agentId = att.agentId;
       const remaining = this.ctx.getWebSockets(AGENT_TAG).length;
@@ -99,6 +122,12 @@ export class GitGlanceDO extends DurableObject<Env> {
       if (state) {
         state.lastSeen = Date.now();
         await this.ctx.storage.kv.put("agent:" + agentId, state);
+      }
+      for (const [id, owner] of this.requests) {
+        if (owner.agentId === agentId) {
+          owner.browser.send(JSON.stringify({ id, type: "error", error: `Agent '${agentId}' disconnected during ${owner.action}` }));
+          this.requests.delete(id);
+        }
       }
       this.broadcastAgentStatus();
     }
@@ -139,13 +168,24 @@ export class GitGlanceDO extends DurableObject<Env> {
       case "progress":
       case "done": {
         const agentId = att?.agentId;
-        this.broadcastToBrowsers({ ...msg, agentId });
+        this.forwardAgentReply({ ...msg, agentId });
+        break;
+      }
+      case "heartbeat": {
+        const agentId = att?.agentId;
+        if (!agentId) break;
+        const state = await this.ctx.storage.kv.get<AgentState>("agent:" + agentId);
+        if (state) {
+          state.lastSeen = Date.now();
+          await this.ctx.storage.kv.put("agent:" + agentId, state);
+        }
+        this.broadcastAgentStatus();
         break;
       }
       case "error": {
         const agentId = att?.agentId;
         logError("[do] agent error forwarded", { agentId, id: msg.id, error: msg.error, action: msg.action });
-        this.broadcastToBrowsers({ ...msg, agentId });
+        this.forwardAgentReply({ ...msg, agentId });
         break;
       }
     }
@@ -197,7 +237,7 @@ export class GitGlanceDO extends DurableObject<Env> {
       if (agents.length > 0) {
         const att = agents[0].deserializeAttachment() as { agentId?: string };
         if (att.agentId) {
-          this.forwardToAgent(att.agentId, { type: "execute", id: msg.id, action: msg.action, params: msg.params });
+          this.forwardToAgent(att.agentId, { type: "execute", id: msg.id, action: msg.action, params: msg.params }, ws);
           return;
         }
       }
@@ -205,29 +245,64 @@ export class GitGlanceDO extends DurableObject<Env> {
       return;
     }
 
-    const machine = msg.params?.machine || msg.params?.agentId;
+    if (msg.action === "cancel") {
+      const targetRequestId = msg.params?.targetRequestId;
+      if (typeof targetRequestId !== "string") {
+        ws.send(JSON.stringify({ id: msg.id, type: "error", error: "Missing targetRequestId for cancel" }));
+        return;
+      }
+      const owner = this.requests.get(targetRequestId);
+      if (!owner) {
+        ws.send(JSON.stringify({ id: msg.id, type: "result", data: { ok: true, alreadyFinished: true } }));
+        return;
+      }
+      if (owner.browser !== ws) {
+        ws.send(JSON.stringify({ id: msg.id, type: "error", error: "Cannot cancel a request owned by another browser" }));
+        return;
+      }
+      this.forwardToAgent(owner.agentId, { type: "execute", id: msg.id, action: "cancel", params: { targetRequestId } }, ws);
+      this.requests.delete(targetRequestId);
+      return;
+    }
+
+    const machine = msg.params?.machine || msg.params?.agentId || this.getFirstOnlineAgentId();
     logInfo("[do] route", { action: msg.action, id: msg.id, machine });
     if (machine) {
-      this.forwardToAgent(machine, { type: "execute", id: msg.id, action: msg.action, params: msg.params });
+      this.forwardToAgent(machine, { type: "execute", id: msg.id, action: msg.action, params: msg.params }, ws);
     } else {
-      ws.send(JSON.stringify({ id: msg.id, type: "error", error: `No machine specified for action: ${msg.action}` }));
+      ws.send(JSON.stringify({ id: msg.id, type: "error", error: `No online agent for action: ${msg.action}` }));
     }
   }
 
-  private forwardToAgent(agentId: string, msg: { type: string; id: string; action: string; params?: any }) {
+  private forwardToAgent(agentId: string, msg: { type: string; id: string; action: string; params?: any }, errorTarget?: WebSocket, trackRequest = true) {
     const agents = this.ctx.getWebSockets(AGENT_TAG);
     logInfo("[do] forwardToAgent", { agentId, action: msg.action, id: msg.id, agentWsCount: agents.length });
     for (const ws of agents) {
       const att = ws.deserializeAttachment() as { isAgent: boolean; agentId?: string };
       if (att.agentId === agentId) {
+        if (errorTarget && trackRequest) {
+          this.requests.set(msg.id, { browser: errorTarget, agentId, action: msg.action });
+          errorTarget.send(JSON.stringify({ id: msg.id, type: "ack", agentId, action: msg.action }));
+        }
         ws.send(JSON.stringify(msg));
         return;
       }
     }
     const errMsg = `Agent '${agentId}' is offline (action: ${msg.action}, id: ${msg.id})`;
     logError("[do] agent not connected", { agentId, action: msg.action, id: msg.id, agentWsCount: agents.length });
-    for (const browser of this.ctx.getWebSockets(BROWSER_TAG)) {
-      browser.send(JSON.stringify({ id: msg.id, type: "error", error: errMsg }));
+    if (errorTarget) errorTarget.send(JSON.stringify({ id: msg.id, type: "error", error: errMsg }));
+    else this.broadcastToBrowsers({ id: msg.id, type: "error", error: errMsg });
+  }
+
+  private forwardAgentReply(msg: any) {
+    const owner = typeof msg.id === "string" ? this.requests.get(msg.id) : null;
+    if (!owner) {
+      logWarn("[do] dropping unowned agent reply", { id: msg.id, type: msg.type, agentId: msg.agentId });
+      return;
+    }
+    owner.browser.send(JSON.stringify(msg));
+    if (msg.type === "done" || msg.type === "error" || msg.type === "result") {
+      this.requests.delete(msg.id);
     }
   }
 

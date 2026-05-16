@@ -73,6 +73,10 @@ func (c *WSClient) SendReposUpdate(repos []GitRepo) error {
 	return c.sendJSON(map[string]any{"type": "register_repos", "repos": repos})
 }
 
+func (c *WSClient) SendHeartbeat() error {
+	return c.sendJSON(map[string]any{"type": "heartbeat"})
+}
+
 func (c *WSClient) ReadMessage() ([]byte, error) {
 	_, msg, err := c.conn.Read(c.ctx)
 	return msg, err

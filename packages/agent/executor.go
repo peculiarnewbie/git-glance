@@ -79,7 +79,7 @@ func (e *Executor) handle(id, action string, params map[string]any) {
 		e.handleUpdateRepoSettings(id, params)
 	case "setConfig":
 		e.handleSetConfig(id, params)
-	case "cancelScan":
+	case "cancel", "cancelScan":
 		CancelScan()
 		e.sender.SendResult(id, map[string]bool{"ok": true})
 	case "cancelCommit":

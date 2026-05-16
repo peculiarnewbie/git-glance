@@ -178,6 +178,20 @@ func (a *Agent) Run() {
 		}
 
 		log.Printf("Connected and registered as %s", a.cfg.AgentID)
+		go func() {
+			ticker := time.NewTicker(20 * time.Second)
+			defer ticker.Stop()
+			for {
+				select {
+				case <-ws.ctx.Done():
+					return
+				case <-ticker.C:
+					if err := ws.SendHeartbeat(); err != nil {
+						return
+					}
+				}
+			}
+		}()
 
 		executor := NewClientExecutor(a.git, a.cache, ws, a.cfg)
 		executor.Run()
