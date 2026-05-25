@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"io"
 	"os/exec"
 	"strconv"
 	"strings"
@@ -61,12 +62,12 @@ func (g *GitService) execGit(ctx context.Context, args, repoPath string, timeout
 	cmd.Dir = repoPath
 	cmd.Env = append(cmd.Environ(), "GIT_TERMINAL_PROMPT=0")
 
-	out, err := cmd.Output()
+	out, err := cmd.CombinedOutput()
 	if err != nil {
 		return "", &GitCommandError{
 			Command:  "git " + args,
 			RepoPath: repoPath,
-			Cause:    err.Error(),
+			Cause:    strings.TrimSpace(string(out)),
 		}
 	}
 	return strings.TrimSpace(string(out)), nil
@@ -88,6 +89,31 @@ func (g *GitService) RunWithLock(ctx context.Context, args, repoPath string, tim
 	unlock := g.withRepoLock(repoPath)
 	defer unlock()
 	return g.execGit(ctx, args, repoPath, timeout)
+}
+
+func (g *GitService) RunWithStdinAndLock(ctx context.Context, args []string, stdin io.Reader, repoPath string, timeout time.Duration) (string, error) {
+	unlock := g.withRepoLock(repoPath)
+	defer unlock()
+	if timeout == 0 {
+		timeout = 10 * time.Second
+	}
+	ctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+
+	cmd := exec.CommandContext(ctx, "git", args...)
+	cmd.Dir = repoPath
+	cmd.Env = append(cmd.Environ(), "GIT_TERMINAL_PROMPT=0")
+	cmd.Stdin = stdin
+
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return "", &GitCommandError{
+			Command:  "git " + strings.Join(args, " "),
+			RepoPath: repoPath,
+			Cause:    strings.TrimSpace(string(out)),
+		}
+	}
+	return strings.TrimSpace(string(out)), nil
 }
 
 func (g *GitService) GetStatus(ctx context.Context, repoPath string) (*GitStatusResult, error) {

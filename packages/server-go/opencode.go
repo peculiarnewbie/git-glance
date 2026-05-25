@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"os/exec"
 	"strings"
 )
@@ -50,9 +51,16 @@ func generateCommitMessage(ctx context.Context, repoPath, branch, stagedSummary,
 	cmd.Stdin = strings.NewReader(prompt)
 
 	var stdout bytes.Buffer
+	var stderr bytes.Buffer
 	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
 
+	log.Printf("[opencode] running: opencode %v (dir=%s)", args, repoPath)
 	if err := cmd.Run(); err != nil {
+		stderrStr := strings.TrimSpace(stderr.String())
+		if stderrStr != "" {
+			return nil, fmt.Errorf("opencode failed: %w\nstderr: %s", err, stderrStr)
+		}
 		return nil, fmt.Errorf("opencode failed: %w", err)
 	}
 

@@ -2,6 +2,13 @@ import { createSignal, For, Show, createMemo, onMount, onCleanup } from "solid-j
 import { api, repoDataToInfo, runUiEffect, checkSession, login, logout } from "./api";
 import type { RepoInfo, AuthState } from "./api";
 
+// Derive types from schema of truth
+type RepoNameType = import("./api").RepoName;
+type RepoPathType = import("./api").RepoPath;
+type RepoBranchType = import("./api").RepoBranch;
+type RepoRemoteType = import("./api").RepoRemote;
+type RepoErrorType = import("./api").RepoError;
+
 type SortKey = "last-commit" | "week-activity" | "name" | "pull-count";
 
 function timeAgo(ts: number): string {
@@ -18,7 +25,7 @@ function timeAgo(ts: number): string {
   return new Date(ts).toLocaleDateString();
 }
 
-function PullButton(props: { repoPath: string; repoName: string; behind: number; machine?: string; onRefresh: (repoPath: string) => Promise<void> }) {
+function PullButton(props: { repoPath: RepoPathType; repoName: RepoNameType; behind: number; machine?: string; onRefresh: (repoPath: string) => Promise<void>; }) {
   const [busy, setBusy] = createSignal(false);
   const [msg, setMsg] = createSignal<string | null>(null);
   function pull() {
@@ -49,7 +56,7 @@ function PullButton(props: { repoPath: string; repoName: string; behind: number;
   );
 }
 
-function PushButton(props: { repoPath: string; repoName: string; ahead: number; machine?: string; onRefresh: (repoPath: string) => Promise<void> }) {
+function PushButton(props: { repoPath: RepoPathType; repoName: RepoNameType; ahead: number; machine?: string; onRefresh: (repoPath: string) => Promise<void>; }) {
   const [busy, setBusy] = createSignal(false);
   const [msg, setMsg] = createSignal<string | null>(null);
   function push() {
@@ -80,7 +87,7 @@ function PushButton(props: { repoPath: string; repoName: string; ahead: number; 
   );
 }
 
-function CommitButton(props: { repoPath: string; commitBusy: () => string | null; commitPhase: () => string; commitError: () => string | null; onCommit: () => void; onCancel: () => void }) {
+function CommitButton(props: { repoPath: RepoPathType; commitBusy: () => string | null; commitPhase: () => string; commitError: () => CommitErrorType | null; onCommit: () => void; onCancel: () => void; }) {
   const isBusy = () => props.commitBusy() === props.repoPath;
   const phaseLabel = () => {
     const labels: Record<string, string> = { staging: "Staging...", generating: "Generating message...", committing: "Committing...", pushing: "Pushing..." };
@@ -121,6 +128,10 @@ export default function App() {
   const [sortKey, setSortKey] = createSignal<SortKey>("last-commit");
   const [grouped, setGrouped] = createSignal(true);
   const [collapsed, setCollapsed] = createSignal<Set<string>>(new Set(["Hidden"]));
+
+  // Derive types from schema of truth
+  type CommitPhaseType = import("./api").CommitEvent['phase'];
+  type CommitErrorType = import("./api").CommitEvent['error'];
   const [loading, setLoading] = createSignal(true);
   const [config, setConfig] = createSignal<{ opencodeModel: string; machines?: { name: string; url: string }[] }>({ opencodeModel: "CrofAI/deepseek-v4-flash" });
   const [showSettings, setShowSettings] = createSignal(false);
@@ -132,6 +143,10 @@ export default function App() {
   const [fetching, setFetching] = createSignal(false);
   const [fetchProgress, setFetchProgress] = createSignal<{ current: number; total: number }>({ current: 0, total: 0 });
   const [fetchCurrentRepo, setFetchCurrentRepo] = createSignal<string>("");
+
+  // Derive types from schema of truth
+  type FetchPhaseType = import("./api").FetchEvent['phase'];
+  type FetchErrorType = import("./api").FetchEvent['error'];
   const [machineFilter, setMachineFilter] = createSignal<string | null>(null);
   const [machines, setMachines] = createSignal<{ name: string; url: string; online: boolean }[]>([]);
   const [machineNameDraft, setMachineNameDraft] = createSignal("");

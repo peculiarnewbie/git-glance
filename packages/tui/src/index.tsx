@@ -1,7 +1,7 @@
 import { render, useKeyboard, useTerminalDimensions } from "@opentui/solid"
 import { createSignal, For, Show, createMemo } from "solid-js"
 import * as Schema from "effect/Schema"
-import { GitRepo, ScanProgress } from "@git-glance/schema"
+import { GitRepo, ScanProgress, RepoName, RepoPath, RepoBranch, RepoRemote, RepoError } from "@git-glance/schema"
 
 // ─── Config ──────────────────────────────────────────────────────────
 const SERVER_HOST = process.env["GIT_GLANCE_HOST"] ?? "http://localhost:3456"
@@ -12,7 +12,7 @@ async function fetchRepos(): Promise<Array<GitRepo>> {
   const res = await fetch(`${SERVER_HOST}/repos`)
   if (!res.ok) throw new Error(`HTTP ${res.status}`)
   const data = (await res.json()) as { repos: Array<unknown> }
-  return Schema.decodeUnknownSync(Schema.Array(GitRepo))(data.repos) as Array<GitRepo>
+  return Schema.decodeUnknownSync(Schema.Array(GitRepo))(data.repos)
 }
 
 function timeAgo(ts: number | null): string {

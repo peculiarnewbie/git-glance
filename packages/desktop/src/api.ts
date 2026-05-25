@@ -150,6 +150,37 @@ export interface RepoData {
   settings: { skipUntracked: boolean; skipPullCheck: boolean; hidden: boolean } | null
 }
 
+// Derive RepoInfo from the schema of truth (WebSocket response)
+export type RepoName = RepoData['name'];
+export type RepoPath = RepoData['path'];
+export type RepoBranch = RepoData['branch'];
+export type RepoRemote = RepoData['remote'];
+export type RepoError = RepoData['error'];
+
+// This is the source of truth - derived from WebSocket response schema
+export interface RepoInfo {
+  path: RepoPath;
+  name: RepoName;
+  machine: RepoName;
+  cached: boolean;
+  status: {
+    branch: RepoBranch;
+    remote: RepoRemote;
+    hasChanges: boolean;
+    staged: number;
+    unstaged: number;
+    untracked: number;
+    ahead: number;
+    behind: number;
+    lastCommitTime: number | null;
+    weekCommits: number;
+    error?: RepoError;
+  };
+  skipUntracked?: boolean;
+  skipPullCheck?: boolean;
+  hidden?: boolean;
+}
+
 export interface ReposResponse {
   repos: RepoData[]; scannedAt: number; scannedDirs: string[]
   machines: { name: string; url: string; online: boolean; lastSeen: number | null }[]
@@ -183,20 +214,20 @@ export const api = {
   setConfig: (config: { rootDir?: string; opencodeModel?: string; machines?: { name: string; url: string }[] }): Promise<void> =>
     send("setConfig", config),
 
-  pullRepo: (repo: string, machine?: string): Promise<{ ok: boolean; output?: string; error?: string }> =>
+  pullRepo: (repo: RepoPath, machine?: string): Promise<{ ok: boolean; output?: string; error?: string }> =>
     send("pull", { repo, machine }),
 
-  pushRepo: (repo: string, machine?: string): Promise<{ ok: boolean; output?: string; error?: string }> =>
+  pushRepo: (repo: RepoPath, machine?: string): Promise<{ ok: boolean; output?: string; error?: string }> =>
     send("push", { repo, machine }),
 
-  updateRepoSettings: (repo: string, settings: { skipUntracked?: boolean; skipPullCheck?: boolean; hidden?: boolean }): Promise<void> =>
+  updateRepoSettings: (repo: RepoPath, settings: { skipUntracked?: boolean; skipPullCheck?: boolean; hidden?: boolean }): Promise<void> =>
     send("updateRepoSettings", { repo, ...settings }),
 
   cancelScan: (): Promise<void> => send("cancel").then(() => {}),
   cancelCommit: (): Promise<void> => send("cancel").then(() => {}),
   cancelFetch: (): Promise<void> => send("cancel").then(() => {}),
 
-  subscribeScan: (rootDir: string, onEvent: (ev: ProgressEvent) => void, onError?: (error: Error) => void): AbortController =>
+  subscribeScan: (rootDir: RepoPath, onEvent: (ev: ProgressEvent) => void, onError?: (error: Error) => void): AbortController =>
     subscribe("scan", { rootDir }, (data) => {
       if (data.type === "error") { onError?.(new Error(data.error)); return }
       if (data.type === "ack") return
@@ -211,7 +242,7 @@ export const api = {
       onEvent(data)
     }),
 
-  subscribeScanOnly: (rootDir: string, onEvent: (ev: ProgressEvent) => void, onError?: (error: Error) => void): AbortController =>
+  subscribeScanOnly: (rootDir: RepoPath, onEvent: (ev: ProgressEvent) => void, onError?: (error: Error) => void): AbortController =>
     subscribe("scanOnly", { rootDir }, (data) => {
       if (data.type === "error") { onError?.(new Error(data.error)); return }
       if (data.type === "ack") return
@@ -219,10 +250,10 @@ export const api = {
       onEvent(data)
     }),
 
-  rescanRepo: (repo: string): Promise<{ ok: boolean; repo?: RepoData; error?: string }> =>
+  rescanRepo: (repo: RepoPath): Promise<{ ok: boolean; repo?: RepoData; error?: string }> =>
     send("rescanRepo", { repo }),
 
-  checkPull: (repo: string): Promise<{ ok: boolean; repo?: RepoData; error?: string }> =>
+  checkPull: (repo: RepoPath): Promise<{ ok: boolean; repo?: RepoData; error?: string }> =>
     send("checkPull", { repo }),
 
   subscribeFetch: (onEvent: (ev: FetchEvent) => void): AbortController =>

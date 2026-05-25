@@ -3,16 +3,11 @@
   "private": true,
   "scripts": {
     "build:serve-go": "cd packages/server-go && go build -o ../../dist/git-glance-serve .",
-    "build:agent": "cd packages/agent && go build -o ../../dist/git-glance-agent .",
-    "build:cloudflare": "pnpm --filter @git-glance/desktop build && cp -r packages/desktop/dist/* packages/cloudflare/dist/",
-    "deploy:cloudflare": "pnpm --filter @git-glance/cloudflare run deploy",
-    "build:desktop": "cd packages/desktop && electrobun build --env=stable",
-    "dev:cloudflare": "cd packages/cloudflare && mkdir -p dist && pnpm wrangler dev --local --port 3456",
-    "dev:agent": "GLANCE_SECRET=dev-secret GLANCE_DO_URL=ws://localhost:3456/ws go run -C packages/agent .",
+    "build:local": "pnpm --filter @git-glance/desktop build",
     "dev:ui": "pnpm --filter @git-glance/desktop dev",
     "dev:server-go": "go run ./packages/server-go",
-    "dev:local": "concurrently -n agent,vite \"go run -C packages/agent . --local\" \"pnpm dev:ui\"",
-    "dev:new": "concurrently -n cf,agent,vite \"pnpm dev:cloudflare\" \"pnpm dev:agent\" \"pnpm dev:ui\""
+    "start": "pnpm --filter @git-glance/desktop build && go build -C packages/server-go -o server-go . && ./packages/server-go/server-go --static=packages/desktop/dist",
+    "dev:local": "concurrently -n agent,vite \"go run -C packages/agent . --local\" \"pnpm dev:ui\""
   },
   "devDependencies": {
     "concurrently": "^9.2.1"

@@ -7,6 +7,7 @@ import (
 	"log"
 	"net/http"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -118,6 +119,8 @@ func handleAction(client *WSClient, req WSRequest, deps *ServerDeps) {
 		client.SendResult(req.ID, map[string]bool{"ok": true})
 	case "cancelFetch":
 		client.SendResult(req.ID, map[string]bool{"ok": true})
+	case "cancel":
+		client.SendResult(req.ID, map[string]bool{"ok": true})
 	case "scan":
 		handleScan(client, req, deps)
 	case "scanOnly":
@@ -179,7 +182,7 @@ func handleGetConfig(client *WSClient, req WSRequest, deps *ServerDeps) {
 	}
 	model := cfg.OpenCodeModel
 	if model == "" {
-		model = "CrofAI/deepseek-v4-flash"
+		model = "deepseek/deepseek-v4-flash"
 	}
 
 	now := time.Now().UnixMilli()
@@ -460,6 +463,7 @@ func handleCommitPush(client *WSClient, req WSRequest, deps *ServerDeps) {
 			if e, ok := data["error"]; ok {
 				if s, ok := e.(string); ok {
 					cp.Error = &s
+					log.Printf("[commitPush] ERROR phase=%s repo=%s: %s", phase, repo, s)
 				}
 			}
 			if s, ok := data["subject"]; ok {
@@ -508,9 +512,10 @@ func handleCommitPush(client *WSClient, req WSRequest, deps *ServerDeps) {
 	cfg, _ := deps.Cache.LoadConfig()
 	model := cfg.OpenCodeModel
 	if model == "" {
-		model = "CrofAI/deepseek-v4-flash"
+		model = "deepseek/deepseek-v4-flash"
 	}
 
+	log.Printf("[commitPush] repo=%s model=%s", repo, model)
 	commitMsg, err := generateCommitMessage(client.ctx, repo, branch, stagedSummary, stagedPatch, model)
 	if err != nil {
 		send("error", map[string]any{"error": err.Error()})
@@ -523,7 +528,7 @@ func handleCommitPush(client *WSClient, req WSRequest, deps *ServerDeps) {
 	if commitMsg.Body != "" {
 		fullMessage = commitMsg.Subject + "\n\n" + commitMsg.Body
 	}
-	_, err = deps.Git.RunWithLock(client.ctx, fmt.Sprintf(`commit -m "%s"`, escapeCommitMsg(fullMessage)), repo, 15*time.Second)
+	_, err = deps.Git.RunWithStdinAndLock(client.ctx, []string{"commit", "-F", "-"}, strings.NewReader(fullMessage), repo, 15*time.Second)
 	if err != nil {
 		send("error", map[string]any{"error": err.Error()})
 		client.SendDone(req.ID)
@@ -684,19 +689,4 @@ func updateRepoInCache(ctx context.Context, deps *ServerDeps, repoPath string) {
 	deps.Cache.Save(repos)
 }
 
-func escapeCommitMsg(msg string) string {
-	escaped := ""
-	for _, c := range msg {
-		switch c {
-		case '"':
-			escaped += "\\\""
-		case '\\':
-			escaped += "\\\\"
-		case '\n':
-			escaped += "\\n"
-		default:
-			escaped += string(c)
-		}
-	}
-	return escaped
-}
+
