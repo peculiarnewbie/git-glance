@@ -2,11 +2,10 @@
   "name": "git-glance",
   "private": true,
   "scripts": {
-    "build:serve-go": "cd packages/server-go && go build -o ../../dist/git-glance-serve .",
-    "build:local": "pnpm --filter @git-glance/desktop build",
+    "build": "node scripts/build.mjs",
+    "start": "node scripts/start.mjs",
     "dev:ui": "pnpm --filter @git-glance/desktop dev",
     "dev:server-go": "go run ./packages/server-go",
-    "start": "pnpm --filter @git-glance/desktop build && go build -C packages/server-go -o server-go . && ./packages/server-go/server-go --static=packages/desktop/dist",
     "dev:local": "concurrently -n agent,vite \"go run -C packages/agent . --local\" \"pnpm dev:ui\""
   },
   "devDependencies": {

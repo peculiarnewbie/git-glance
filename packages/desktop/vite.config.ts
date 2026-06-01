@@ -5,6 +5,9 @@ import tailwindcss from "@tailwindcss/vite";
 export default defineConfig({
   base: "./",
   plugins: [solid(), tailwindcss()],
+  build: {
+    outDir: "renderer-dist",
+  },
   server: {
     host: "0.0.0.0",
     port: 8912,

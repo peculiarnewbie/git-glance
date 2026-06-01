@@ -15,7 +15,7 @@ type CacheService struct {
 	cacheDir   string
 	configDir  string
 
-	remoteRepros map[string][]GitRepo
+	remoteRepos map[string][]GitRepo
 	scannedDirs  []string
 }
 
@@ -25,7 +25,7 @@ func NewCacheService(cachePath, configPath string) *CacheService {
 		configPath:   configPath,
 		cacheDir:     filepath.Dir(cachePath),
 		configDir:    filepath.Dir(configPath),
-		remoteRepros: make(map[string][]GitRepo),
+		remoteRepos: make(map[string][]GitRepo),
 	}
 }
 
@@ -97,7 +97,13 @@ func (c *CacheService) AddScannedDir(dir string) {
 func (c *CacheService) SetRemoteRepos(machine string, repos []GitRepo) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	c.remoteRepros[machine] = repos
+	c.remoteRepos[machine] = repos
+}
+
+func (c *CacheService) ClearRemoteRepos(machine string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	delete(c.remoteRepos, machine)
 }
 
 func (c *CacheService) GetAllRepos() ([]GitRepo, error) {
@@ -109,7 +115,7 @@ func (c *CacheService) GetAllRepos() ([]GitRepo, error) {
 	defer c.mu.RUnlock()
 	all := make([]GitRepo, len(local))
 	copy(all, local)
-	for _, repos := range c.remoteRepros {
+	for _, repos := range c.remoteRepos {
 		all = append(all, repos...)
 	}
 	return all, nil

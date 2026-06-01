@@ -187,8 +187,8 @@ export interface ReposResponse {
 }
 
 export interface ServerConfigResponse {
-  rootDir: string | null; opencodeModel: string
-  machines: { name: string; url: string; online: boolean }[]
+  rootDir: string | null; opencodeModel: string; token?: string
+  machines: { name: string; url: string; token?: string; online: boolean }[]
 }
 
 export interface ProgressEvent {
@@ -211,7 +211,7 @@ export const api = {
 
   getConfig: (): Promise<ServerConfigResponse> => send<ServerConfigResponse>("getConfig"),
 
-  setConfig: (config: { rootDir?: string; opencodeModel?: string; machines?: { name: string; url: string }[] }): Promise<void> =>
+  setConfig: (config: { rootDir?: string; opencodeModel?: string; machines?: { name: string; url: string; token?: string }[] }): Promise<void> =>
     send("setConfig", config),
 
   pullRepo: (repo: RepoPath, machine?: string): Promise<{ ok: boolean; output?: string; error?: string }> =>

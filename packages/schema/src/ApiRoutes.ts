@@ -15,6 +15,7 @@ export class ServerConfigSchema extends Schema.Class<ServerConfigSchema>("Server
     Schema.Struct({
       name: Schema.String,
       url: Schema.String,
+      token: Schema.optional(Schema.String, { default: () => "" }),
     }),
   ),
 }) {}

@@ -1,5 +1,6 @@
 import { join } from "node:path"
 import { cpSync, existsSync } from "node:fs"
+import { platform } from "node:os"
 
 const buildDir = process.env.ELECTROBUN_BUILD_DIR
 if (!buildDir) {
@@ -7,12 +8,16 @@ if (!buildDir) {
   process.exit(1)
 }
 
-const serverBinary = join(__dirname, "../../../dist/git-glance-serve")
-const target = join(buildDir, "git-glance-serve")
+const isWin = platform() === "win32"
+const ext = isWin ? ".exe" : ""
+const binaryName = `git-glance-serve${ext}`
+
+const serverBinary = join(__dirname, "../../../dist", binaryName)
+const target = join(buildDir, binaryName)
 
 if (!existsSync(serverBinary)) {
   console.error("Server binary not found at", serverBinary)
-  console.error("Run 'bun run build:serve' first")
+  console.error("Run 'pnpm build' first")
   process.exit(1)
 }
 

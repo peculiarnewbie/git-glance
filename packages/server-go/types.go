@@ -1,5 +1,7 @@
 package main
 
+import "encoding/json"
+
 type GitRepoSettings struct {
 	SkipUntracked bool `json:"skipUntracked"`
 	SkipPullCheck bool `json:"skipPullCheck"`
@@ -39,8 +41,9 @@ type ServerConfig struct {
 }
 
 type ServerConfigMachine struct {
-	Name string `json:"name"`
-	URL  string `json:"url"`
+	Name  string `json:"name"`
+	URL   string `json:"url"`
+	Token string `json:"token,omitempty"`
 }
 
 type ReposResponse struct {
@@ -92,6 +95,7 @@ type FetchProgress struct {
 type PersistedConfig struct {
 	RootDir       string                `json:"rootDir,omitempty"`
 	OpenCodeModel string                `json:"opencodeModel,omitempty"`
+	Token         string                `json:"token,omitempty"`
 	Machines      []ServerConfigMachine `json:"machines,omitempty"`
 }
 
@@ -111,6 +115,7 @@ type GitStatusResult struct {
 type MachineState struct {
 	Name     string
 	URL      string
+	Token    string
 	Online   bool
 	LastSeen *int64
 }
@@ -128,4 +133,25 @@ type WSResponse struct {
 	Type string `json:"type"`
 	Data any    `json:"data,omitempty"`
 	Err  string `json:"error,omitempty"`
+}
+
+// ─── Inter-machine peer protocol ──────────────────────────────────────
+
+type PeerEnvelope struct {
+	Type    string          `json:"type"`    // "auth" | "req" | "res" | "push"
+	ID      string          `json:"id,omitempty"`
+	Token   string          `json:"token,omitempty"`
+	Action  string          `json:"action,omitempty"`
+	Event   string          `json:"event,omitempty"`
+	OK      bool            `json:"ok,omitempty"`
+	Error   string          `json:"error,omitempty"`
+	Payload json.RawMessage `json:"payload,omitempty"`
+}
+
+type PeerPullPushPayload struct {
+	Path string `json:"path"`
+}
+
+func strPtr(s string) *string {
+	return &s
 }

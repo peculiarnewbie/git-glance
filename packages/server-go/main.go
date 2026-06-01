@@ -1,7 +1,8 @@
 package main
 
 import (
-	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"flag"
 	"fmt"
 	"log"
@@ -24,6 +25,7 @@ func main() {
 	staticDir := flag.String("static", "", "Static files directory")
 	devURL := flag.String("dev-url", "", "Dev URL to redirect to (e.g. http://localhost:8912)")
 	machineName := flag.String("name", "", "Local machine name (default: hostname)")
+	token := flag.String("token", "", "Auth token for peer connections (auto-generated if empty)")
 	flag.Parse()
 
 	if v := os.Getenv("PORT"); v != "" {
@@ -58,27 +60,40 @@ func main() {
 	cache := NewCacheService(cachePath, configPath)
 	git := NewGitService()
 
-	remote := NewRemoteMachineService(
-		func(machine string, repos []GitRepo) {
-			cache.SetRemoteRepos(machine, repos)
-		},
-		nil,
-	)
-
-	// Start remote machine polling
-	deps := &ServerDeps{Git: git, Cache: cache, Remote: remote, LocalName: *machineName}
-	go func() {
-		cfg, err := cache.LoadConfig()
-		if err == nil {
-			remote.StartPolling(context.Background(), cfg)
+	// Load or generate auth token
+	cfg, _ := cache.LoadConfig()
+	localToken := *token
+	if localToken == "" {
+		if cfg.Token != "" {
+			localToken = cfg.Token
+		} else {
+			buf := make([]byte, 16)
+			rand.Read(buf)
+			localToken = hex.EncodeToString(buf)
+			cfg.Token = localToken
+			cache.SaveConfig(cfg)
+			log.Printf("[auth] generated new peer token: %s", localToken)
 		}
-	}()
+	}
+
+	peers := NewPeerManager(*machineName, localToken, cache, git)
+	peers.UpdateConfig(cfg)
+
+	deps := &ServerDeps{Git: git, Cache: cache, Peers: peers, LocalName: *machineName}
+
+	// Send machine status to UI clients when peers connect/disconnect
+	peers.OnMachineStatus(func(states []MachineState) {
+		// UI clients poll via getRepos/getConfig; no push needed here
+	})
 
 	mux := http.NewServeMux()
 
-	// WebSocket endpoint
+	// WebSocket endpoints
 	mux.HandleFunc("/ws", func(w http.ResponseWriter, r *http.Request) {
 		handleWS(w, r, deps)
+	})
+	mux.HandleFunc("/peer", func(w http.ResponseWriter, r *http.Request) {
+		handlePeerWS(w, r, peers)
 	})
 
 	// Health endpoint (HTTP GET for backwards compat / health checks)

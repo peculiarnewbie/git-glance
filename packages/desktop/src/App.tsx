@@ -133,7 +133,7 @@ export default function App() {
   type CommitPhaseType = import("./api").CommitEvent['phase'];
   type CommitErrorType = import("./api").CommitEvent['error'];
   const [loading, setLoading] = createSignal(true);
-  const [config, setConfig] = createSignal<{ opencodeModel: string; machines?: { name: string; url: string }[] }>({ opencodeModel: "CrofAI/deepseek-v4-flash" });
+  const [config, setConfig] = createSignal<{ opencodeModel: string; token?: string; machines?: { name: string; url: string; token?: string }[] }>({ opencodeModel: "CrofAI/deepseek-v4-flash" });
   const [showSettings, setShowSettings] = createSignal(false);
   const [modelDraft, setModelDraft] = createSignal("");
   const [commitBusy, setCommitBusy] = createSignal<string | null>(null);
@@ -151,6 +151,7 @@ export default function App() {
   const [machines, setMachines] = createSignal<{ name: string; url: string; online: boolean }[]>([]);
   const [machineNameDraft, setMachineNameDraft] = createSignal("");
   const [machineUrlDraft, setMachineUrlDraft] = createSignal("");
+  const [machineTokenDraft, setMachineTokenDraft] = createSignal("");
   const [showDirModal, setShowDirModal] = createSignal(false);
   const [dirInputValue, setDirInputValue] = createSignal("");
   const [dirInputError, setDirInputError] = createSignal<string | null>(null);
@@ -202,7 +203,7 @@ export default function App() {
 
     const cfg = await api.getConfig();
     if (cfg) {
-      setConfig({ opencodeModel: cfg.opencodeModel, machines: cfg.machines?.map(m => ({ name: m.name, url: m.url })) });
+      setConfig({ opencodeModel: cfg.opencodeModel, token: (cfg as any).token, machines: cfg.machines?.map(m => ({ name: m.name, url: m.url, token: m.token })) });
       setMachines((cfg.machines || []).map(m => ({ name: m.name, url: m.url, online: m.online })));
       if (cfg.rootDir) setDir(cfg.rootDir);
     }
@@ -905,6 +906,14 @@ export default function App() {
 
                     <div class="border-t border-zinc-800 pt-3 mb-2">
                       <div class="text-[11px] font-medium text-zinc-400 mb-2 uppercase tracking-wider">Remote Machines</div>
+                      <div class="flex items-center gap-2 px-2 py-1.5 bg-zinc-800/30 rounded mb-2">
+                        <span class="text-[10px] text-zinc-500">Your token:</span>
+                        <code class="text-[10px] text-zinc-400 font-mono bg-zinc-800 px-1.5 py-0.5 rounded select-all">{config().token || "loading..."}</code>
+                        <button
+                          onClick={() => navigator.clipboard.writeText(config().token || "")}
+                          class="text-[10px] text-zinc-500 hover:text-zinc-300 ml-auto shrink-0"
+                        >copy</button>
+                      </div>
                       <For each={config().machines ?? []}>{(m) =>
                         <div class="flex items-center justify-between py-1.5 px-2 bg-zinc-800/50 rounded mb-1">
                           <div class="flex items-center gap-2 min-w-0">
@@ -938,18 +947,26 @@ export default function App() {
                           placeholder="http://host:3456"
                           class="flex-1 bg-zinc-800 border border-zinc-700 rounded px-2 py-1.5 text-[11px] text-zinc-300 focus:outline-none focus:border-zinc-500 min-w-0"
                         />
+                        <input
+                          value={machineTokenDraft()}
+                          onInput={(e) => setMachineTokenDraft(e.currentTarget.value)}
+                          placeholder="token"
+                          class="flex-1 bg-zinc-800 border border-zinc-700 rounded px-2 py-1.5 text-[11px] text-zinc-300 font-mono focus:outline-none focus:border-zinc-500 min-w-0"
+                        />
                         <button
                           onClick={async () => {
                             const name = machineNameDraft().trim()
                             const url = machineUrlDraft().trim()
-                            if (!name || !url) return
-                            const updated = [...(config().machines ?? []), { name, url }]
+                            const token = machineTokenDraft().trim()
+                            if (!name || !url || !token) return
+                            const updated = [...(config().machines ?? []), { name, url, token }]
                             const newConfig = { opencodeModel: config().opencodeModel, machines: updated }
                             await api.setConfig(newConfig)
                             setConfig(newConfig)
                             setMachines(updated.map(x => ({ ...x, online: machines().find(m2 => m2.name === x.name)?.online ?? false })))
                             setMachineNameDraft("")
                             setMachineUrlDraft("")
+                            setMachineTokenDraft("")
                           }}
                           class="px-2 py-1.5 bg-zinc-700 hover:bg-zinc-600 rounded text-[11px] font-medium transition-colors shrink-0"
                         >+</button>

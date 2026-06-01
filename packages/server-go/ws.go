@@ -59,11 +59,9 @@ func (c *WSClient) SendDone(id string) error {
 type ServerDeps struct {
 	Git       *GitService
 	Cache     *CacheService
-	Remote    *RemoteMachineService
+	Peers     *PeerManager
 	LocalName string
 }
-
-var intPtr = func(i int) *int { return &i }
 
 func handleWS(w http.ResponseWriter, r *http.Request, deps *ServerDeps) {
 	conn, err := websocket.Accept(w, r, &websocket.AcceptOptions{
@@ -142,13 +140,12 @@ func handleGetRepos(client *WSClient, req WSRequest, deps *ServerDeps) {
 		client.SendError(req.ID, err.Error())
 		return
 	}
-	// Migrate old cached repos labelled "local" to the configured local machine name
 	for i := range allRepos {
-		if allRepos[i].Machine == "local" || allRepos[i].Machine == "" {
+		if allRepos[i].Machine == "" {
 			allRepos[i].Machine = deps.LocalName
 		}
 	}
-	statuses := deps.Remote.GetStatuses()
+	statuses := deps.Peers.GetStatuses()
 	scannedDirs := deps.Cache.GetScannedDirs()
 
 	now := time.Now().UnixMilli()
@@ -174,7 +171,7 @@ func handleGetConfig(client *WSClient, req WSRequest, deps *ServerDeps) {
 		client.SendError(req.ID, err.Error())
 		return
 	}
-	statuses := deps.Remote.GetStatuses()
+	statuses := deps.Peers.GetStatuses()
 
 	var rootDir *string
 	if cfg.RootDir != "" {
@@ -210,6 +207,7 @@ func handleGetConfig(client *WSClient, req WSRequest, deps *ServerDeps) {
 	client.SendResult(req.ID, map[string]any{
 		"rootDir":       rootDir,
 		"opencodeModel": model,
+		"token":         cfg.Token,
 		"machines":      machinesWithOnline,
 	})
 }
@@ -237,13 +235,14 @@ func handleSetConfig(client *WSClient, req WSRequest, deps *ServerDeps) {
 				if mm, ok := m.(map[string]any); ok {
 					name, _ := mm["name"].(string)
 					url, _ := mm["url"].(string)
+					token, _ := mm["token"].(string)
 					if name != "" && url != "" {
-						cfgMachines = append(cfgMachines, ServerConfigMachine{Name: name, URL: url})
+						cfgMachines = append(cfgMachines, ServerConfigMachine{Name: name, URL: url, Token: token})
 					}
 				}
 			}
 			existing.Machines = cfgMachines
-			deps.Remote.UpdateConfig(existing)
+			deps.Peers.UpdateConfig(existing)
 		}
 	}
 
@@ -268,7 +267,7 @@ func handlePull(client *WSClient, req WSRequest, deps *ServerDeps) {
 	}
 
 	if machine != deps.LocalName {
-		result, err := deps.Remote.ProxyRequest(client.ctx, machine, "POST", "/pull?repo="+repo, "")
+		result, err := deps.Peers.ProxyPull(machine, repo)
 		if err != nil {
 			client.SendError(req.ID, err.Error())
 		} else {
@@ -300,7 +299,7 @@ func handlePush(client *WSClient, req WSRequest, deps *ServerDeps) {
 	}
 
 	if machine != deps.LocalName {
-		result, err := deps.Remote.ProxyRequest(client.ctx, machine, "POST", "/push?repo="+repo, "")
+		result, err := deps.Peers.ProxyPush(machine, repo)
 		if err != nil {
 			client.SendError(req.ID, err.Error())
 		} else {
@@ -420,6 +419,7 @@ func handleScan(client *WSClient, req WSRequest, deps *ServerDeps) {
 			return
 		}
 	}
+	deps.Peers.NotifyReposUpdated()
 	client.SendDone(req.ID)
 }
 
@@ -443,6 +443,7 @@ func handleScanOnly(client *WSClient, req WSRequest, deps *ServerDeps) {
 			return
 		}
 	}
+	deps.Peers.NotifyReposUpdated()
 	client.SendDone(req.ID)
 }
 
@@ -687,6 +688,7 @@ func updateRepoInCache(ctx context.Context, deps *ServerDeps, repoPath string) {
 	}
 
 	deps.Cache.Save(repos)
+	deps.Peers.NotifyReposUpdated()
 }
 
 
