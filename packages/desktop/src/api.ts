@@ -141,10 +141,15 @@ function subscribe(action: string, params: Record<string, any> | undefined, onEv
 
 // ─── Public API ──────────────────────────────────────────────────────
 
+export interface FileStatus {
+  path: string;
+  status: string; // XY porcelain chars: "M ", "A ", " D", "??", "R ", "D ", etc.
+}
+
 export interface RepoData {
   name: string; path: string; branch: string | null; hasChanges: boolean
-  staged: number; stagedFiles: string[]; unstaged: number; unstagedFiles: string[]
-  untracked: number; untrackedFiles: string[]
+  staged: number; stagedFiles: FileStatus[]; unstaged: number; unstagedFiles: FileStatus[]
+  untracked: number; untrackedFiles: FileStatus[]
   ahead: number; behind: number; remote: string | null
   lastCommitTime: number | null; weekCommits: number; lastScanTime: number | null
   error: string | null; machine: string
@@ -169,11 +174,11 @@ export interface RepoInfo {
     remote: RepoRemote;
     hasChanges: boolean;
     staged: number;
-    stagedFiles: string[];
+    stagedFiles: FileStatus[];
     unstaged: number;
-    unstagedFiles: string[];
+    unstagedFiles: FileStatus[];
     untracked: number;
-    untrackedFiles: string[];
+    untrackedFiles: FileStatus[];
     ahead: number;
     behind: number;
     lastCommitTime: number | null;
@@ -339,9 +344,9 @@ export function repoDataToInfo(r: RepoData): RepoInfo {
 
 interface GitStatus {
   branch: string; remote: string | null; hasChanges: boolean
-  staged: number; stagedFiles: string[]
-  unstaged: number; unstagedFiles: string[]
-  untracked: number; untrackedFiles: string[]
+  staged: number; stagedFiles: FileStatus[]
+  unstaged: number; unstagedFiles: FileStatus[]
+  untracked: number; untrackedFiles: FileStatus[]
   ahead: number; behind: number; lastCommitTime: number | null
   weekCommits: number; error?: string
 }

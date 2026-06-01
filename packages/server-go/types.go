@@ -8,17 +8,22 @@ type GitRepoSettings struct {
 	Hidden        bool `json:"hidden"`
 }
 
+type FileStatus struct {
+	Path   string `json:"path"`
+	Status string `json:"status"` // XY porcelain chars, e.g. "M ", "A ", " D", "??", "R ", etc.
+}
+
 type GitRepo struct {
 	Name           string           `json:"name"`
 	Path           string           `json:"path"`
 	Branch         *string          `json:"branch"`
 	HasChanges     bool             `json:"hasChanges"`
-	Staged         int              `json:"staged"`
-	StagedFiles    []string         `json:"stagedFiles"`
-	Unstaged       int              `json:"unstaged"`
-	UnstagedFiles  []string         `json:"unstagedFiles"`
-	Untracked      int              `json:"untracked"`
-	UntrackedFiles []string         `json:"untrackedFiles"`
+	Staged         int          `json:"staged"`
+	StagedFiles    []FileStatus `json:"stagedFiles"`
+	Unstaged       int          `json:"unstaged"`
+	UnstagedFiles  []FileStatus `json:"unstagedFiles"`
+	Untracked      int          `json:"untracked"`
+	UntrackedFiles []FileStatus `json:"untrackedFiles"`
 	Ahead          int              `json:"ahead"`
 	Behind         int              `json:"behind"`
 	Remote         *string          `json:"remote"`
@@ -107,11 +112,11 @@ type GitStatusResult struct {
 	Remote         *string
 	HasChanges     bool
 	Staged         int
-	StagedFiles    []string
+	StagedFiles    []FileStatus
 	Unstaged       int
-	UnstagedFiles  []string
+	UnstagedFiles  []FileStatus
 	Untracked      int
-	UntrackedFiles []string
+	UntrackedFiles []FileStatus
 	Ahead          int
 	Behind         int
 	LastCommitTime *int64

@@ -1,6 +1,6 @@
 import { createSignal, For, Show, createMemo, createEffect, onMount, onCleanup } from "solid-js";
 import { api, repoDataToInfo, runUiEffect, checkSession, login, logout } from "./api";
-import type { RepoInfo, AuthState } from "./api";
+import type { RepoInfo, AuthState, FileStatus } from "./api";
 
 // Derive types from schema of truth
 type RepoNameType = import("./api").RepoName;
@@ -23,6 +23,19 @@ function timeAgo(ts: number): string {
   const weeks = Math.floor(days / 7);
   if (weeks < 8) return `${weeks}w ago`;
   return new Date(ts).toLocaleDateString();
+}
+
+function fileStatusColor(fs: FileStatus): string {
+  const code = fs.status.replace(/\s/g, "");
+  switch (code) {
+    case "M": return "bg-blue-500/15";
+    case "A": return "bg-emerald-500/15";
+    case "D": return "bg-red-500/15";
+    case "R": return "bg-purple-500/15";
+    case "C": return "bg-cyan-500/15";
+    case "?": return "bg-zinc-500/10";
+    default:  return "";
+  }
 }
 
 function PullButton(props: { repoPath: RepoPathType; repoName: RepoNameType; behind: number; machine?: string; onRefresh: (repoPath: string) => Promise<void>; }) {
@@ -905,10 +918,10 @@ export default function App() {
                     <div class="text-amber-400/70 mb-0.5">Staged:</div>
                     <For each={repo().status.stagedFiles}>{(f) =>
                       <button
-                        onMouseDown={(e) => { e.stopPropagation(); handleFileClick(repo().path, f, "staged"); }}
-                        class="w-full text-left text-zinc-400 pl-2 truncate hover:bg-zinc-800/60 hover:text-zinc-200 rounded px-1 py-0.5 transition-colors"
-                        title={f}
-                      >{f}</button>
+                        onMouseDown={(e) => { e.stopPropagation(); handleFileClick(repo().path, f.path, "staged"); }}
+                        class={`w-full text-left text-zinc-400 pl-2 truncate hover:bg-zinc-800/60 hover:text-zinc-200 rounded px-1 py-0.5 transition-colors ${fileStatusColor(f)}`}
+                        title={f.path}
+                      >{f.path}</button>
                     }</For>
                   </div>
                 </Show>
@@ -917,10 +930,10 @@ export default function App() {
                     <div class="text-orange-400/70 mb-0.5">Unstaged:</div>
                     <For each={repo().status.unstagedFiles}>{(f) =>
                       <button
-                        onMouseDown={(e) => { e.stopPropagation(); handleFileClick(repo().path, f, "unstaged"); }}
-                        class="w-full text-left text-zinc-400 pl-2 truncate hover:bg-zinc-800/60 hover:text-zinc-200 rounded px-1 py-0.5 transition-colors"
-                        title={f}
-                      >{f}</button>
+                        onMouseDown={(e) => { e.stopPropagation(); handleFileClick(repo().path, f.path, "unstaged"); }}
+                        class={`w-full text-left text-zinc-400 pl-2 truncate hover:bg-zinc-800/60 hover:text-zinc-200 rounded px-1 py-0.5 transition-colors ${fileStatusColor(f)}`}
+                        title={f.path}
+                      >{f.path}</button>
                     }</For>
                   </div>
                 </Show>
@@ -929,10 +942,10 @@ export default function App() {
                     <div class="text-zinc-500 mb-0.5">Untracked:</div>
                     <For each={repo().status.untrackedFiles}>{(f) =>
                       <button
-                        onMouseDown={(e) => { e.stopPropagation(); handleFileClick(repo().path, f, "untracked"); }}
-                        class="w-full text-left text-zinc-500 pl-2 truncate hover:bg-zinc-800/60 hover:text-zinc-300 rounded px-1 py-0.5 transition-colors"
-                        title={f}
-                      >{f}</button>
+                        onMouseDown={(e) => { e.stopPropagation(); handleFileClick(repo().path, f.path, "untracked"); }}
+                        class={`w-full text-left text-zinc-500 pl-2 truncate hover:bg-zinc-800/60 hover:text-zinc-300 rounded px-1 py-0.5 transition-colors ${fileStatusColor(f)}`}
+                        title={f.path}
+                      >{f.path}</button>
                     }</For>
                   </div>
                 </Show>

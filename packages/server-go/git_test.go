@@ -46,13 +46,13 @@ func TestGetStatusIncludesStagedUnstagedAndUntrackedFiles(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if status.Staged != 1 || !reflect.DeepEqual(status.StagedFiles, []string{"staged.txt"}) {
+	if status.Staged != 1 || !reflect.DeepEqual(status.StagedFiles, []FileStatus{{Path: "staged.txt", Status: "M "}}) {
 		t.Fatalf("staged = %d %#v", status.Staged, status.StagedFiles)
 	}
-	if status.Unstaged != 1 || !reflect.DeepEqual(status.UnstagedFiles, []string{"unstaged.txt"}) {
+	if status.Unstaged != 1 || !reflect.DeepEqual(status.UnstagedFiles, []FileStatus{{Path: "unstaged.txt", Status: " M"}}) {
 		t.Fatalf("unstaged = %d %#v", status.Unstaged, status.UnstagedFiles)
 	}
-	if status.Untracked != 1 || !reflect.DeepEqual(status.UntrackedFiles, []string{"untracked.txt"}) {
+	if status.Untracked != 1 || !reflect.DeepEqual(status.UntrackedFiles, []FileStatus{{Path: "untracked.txt", Status: "??"}}) {
 		t.Fatalf("untracked = %d %#v", status.Untracked, status.UntrackedFiles)
 	}
 }
@@ -73,7 +73,7 @@ func TestGetStatusPreservesLeadingSpaceForFirstUnstagedLine(t *testing.T) {
 	if status.Staged != 0 || len(status.StagedFiles) != 0 {
 		t.Fatalf("staged = %d %#v", status.Staged, status.StagedFiles)
 	}
-	if status.Unstaged != 1 || !reflect.DeepEqual(status.UnstagedFiles, []string{"package.json"}) {
+	if status.Unstaged != 1 || !reflect.DeepEqual(status.UnstagedFiles, []FileStatus{{Path: "package.json", Status: " M"}}) {
 		t.Fatalf("unstaged = %d %#v", status.Unstaged, status.UnstagedFiles)
 	}
 }
@@ -91,7 +91,7 @@ func TestGetStatusIgnoresRepoConfigThatHidesUntrackedFiles(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if status.Untracked != 1 || !reflect.DeepEqual(status.UntrackedFiles, []string{"untracked.txt"}) {
+	if status.Untracked != 1 || !reflect.DeepEqual(status.UntrackedFiles, []FileStatus{{Path: "untracked.txt", Status: "??"}}) {
 		t.Fatalf("untracked = %d %#v", status.Untracked, status.UntrackedFiles)
 	}
 }
@@ -108,7 +108,7 @@ func TestGetStatusParsesRenamedStagedFileAsNewPath(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if status.Staged != 1 || !reflect.DeepEqual(status.StagedFiles, []string{"new.txt"}) {
+	if status.Staged != 1 || !reflect.DeepEqual(status.StagedFiles, []FileStatus{{Path: "new.txt", Status: "R "}}) {
 		t.Fatalf("staged = %d %#v", status.Staged, status.StagedFiles)
 	}
 }

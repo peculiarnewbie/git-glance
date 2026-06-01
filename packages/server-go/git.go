@@ -188,7 +188,7 @@ func (g *GitService) GetStatus(ctx context.Context, repoPath string) (*GitStatus
 
 	lines := strings.Split(rawStatus, "\n")
 	var staged, unstaged, untracked int
-	var stagedFiles, unstagedFiles, untrackedFiles []string
+	var stagedFiles, unstagedFiles, untrackedFiles []FileStatus
 	for _, l := range lines {
 		if l == "" {
 			continue
@@ -197,19 +197,19 @@ func (g *GitService) GetStatus(ctx context.Context, repoPath string) (*GitStatus
 		if strings.HasPrefix(l, "??") {
 			untracked++
 			if filePath != "" {
-				untrackedFiles = append(untrackedFiles, filePath)
+				untrackedFiles = append(untrackedFiles, FileStatus{Path: filePath, Status: "??"})
 			}
 		} else {
 			if l[0] != ' ' {
 				staged++
 				if filePath != "" {
-					stagedFiles = append(stagedFiles, filePath)
+					stagedFiles = append(stagedFiles, FileStatus{Path: filePath, Status: string(l[0]) + " "})
 				}
 			}
 			if len(l) > 1 && l[1] != ' ' {
 				unstaged++
 				if filePath != "" {
-					unstagedFiles = append(unstagedFiles, filePath)
+					unstagedFiles = append(unstagedFiles, FileStatus{Path: filePath, Status: " " + string(l[1])})
 				}
 			}
 		}

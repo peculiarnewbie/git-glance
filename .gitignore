@@ -25,3 +25,5 @@ packages/cloudflare/dist/
 packages/agent/agent
 packages/agent/agent.exe
 **/*.exe
+
+packages/server-go/server-go
