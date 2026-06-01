@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"os"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -127,6 +128,8 @@ func handleAction(client *WSClient, req WSRequest, deps *ServerDeps) {
 		handleCommitPush(client, req, deps)
 	case "fetchAll":
 		handleFetchAll(client, req, deps)
+	case "getDiff":
+		handleGetDiff(client, req, deps)
 	default:
 		client.SendError(req.ID, fmt.Sprintf("unknown action: %s", req.Action))
 	}
@@ -642,6 +645,58 @@ func makeRepoFromStatus(repoPath string, status *GitStatusResult, localName stri
 		LastScanTime:   &now,
 		Machine:        localName,
 	}
+}
+
+func handleGetDiff(client *WSClient, req WSRequest, deps *ServerDeps) {
+	params := req.Params
+	repo, _ := params["repo"].(string)
+	file, _ := params["file"].(string)
+	statusType, _ := params["status"].(string) // "staged", "unstaged", "untracked"
+
+	if repo == "" || file == "" {
+		client.SendError(req.ID, `Missing "repo" or "file" parameter`)
+		return
+	}
+
+	var diff string
+	var err error
+
+	switch statusType {
+	case "staged":
+		diff, err = deps.Git.RunWithLock(client.ctx, fmt.Sprintf("diff --cached -- %s", file), repo, 15*time.Second)
+	case "unstaged":
+		diff, err = deps.Git.RunWithLock(client.ctx, fmt.Sprintf("diff -- %s", file), repo, 15*time.Second)
+	case "untracked":
+		diff, err = deps.Git.RunWithLock(client.ctx, fmt.Sprintf("diff --no-index /dev/null %s", file), repo, 15*time.Second)
+		if err != nil {
+			diff, err = deps.Git.RunWithLock(client.ctx, fmt.Sprintf("show :%s", file), repo, 15*time.Second)
+			if err != nil {
+				content, readErr := os.ReadFile(filepath.Join(repo, file))
+				if readErr != nil {
+					client.SendError(req.ID, fmt.Sprintf("Cannot read untracked file: %v", readErr))
+					return
+				}
+				diff = fmt.Sprintf("diff --git a/%s b/%s\nnew file mode 100644\n--- /dev/null\n+++ b/%s\n", file, file, file)
+				lines := strings.Split(string(content), "\n")
+				for _, line := range lines {
+					diff += "+" + line + "\n"
+				}
+			}
+		}
+	default:
+		client.SendError(req.ID, `Invalid "status" parameter (must be staged, unstaged, or untracked)`)
+		return
+	}
+
+	if err != nil {
+		client.SendError(req.ID, fmt.Sprintf("Git diff failed: %v", err))
+		return
+	}
+
+	client.SendResult(req.ID, map[string]any{
+		"file": file,
+		"diff": diff,
+	})
 }
 
 func updateRepoInCache(ctx context.Context, deps *ServerDeps, repoPath string) {

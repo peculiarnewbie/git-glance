@@ -12,6 +12,7 @@
     "preview": "vite preview"
   },
   "dependencies": {
+    "@pierre/diffs": "^1.2.5",
     "effect": "4.0.0-beta.60",
     "solid-js": "^1.9.11"
   },

@@ -1,4 +1,4 @@
-import { createSignal, For, Show, createMemo, onMount, onCleanup } from "solid-js";
+import { createSignal, For, Show, createMemo, createEffect, onMount, onCleanup } from "solid-js";
 import { api, repoDataToInfo, runUiEffect, checkSession, login, logout } from "./api";
 import type { RepoInfo, AuthState } from "./api";
 
@@ -158,6 +158,29 @@ export default function App() {
   const [authState, setAuthState] = createSignal<AuthState>("loading");
   const [userEmail, setUserEmail] = createSignal<string | null>(null);
 
+  const [diffFile, setDiffFile] = createSignal<{ repo: string; file: string; status: string } | null>(null);
+  const [diffContent, setDiffContent] = createSignal<string | null>(null);
+
+  let workerPoolPromise: Promise<any> | null = null;
+  let workerPoolInstance: any = null;
+
+  function getWorkerPool() {
+    if (workerPoolInstance) return Promise.resolve(workerPoolInstance);
+    if (workerPoolPromise) return workerPoolPromise;
+    workerPoolPromise = (async () => {
+      const { WorkerPoolManager } = await import("@pierre/diffs/worker");
+      const { default: ShikiWorkerUrl } = await import("@pierre/diffs/worker/worker.js?worker&url");
+      const pool = new WorkerPoolManager(
+        { workerFactory: () => new Worker(ShikiWorkerUrl, { type: "module" }), poolSize: 2 },
+        { theme: "pierre-dark", lineDiffType: "none", preferredHighlighter: "shiki-wasm" },
+      );
+      await pool.initialize();
+      workerPoolInstance = pool;
+      return pool;
+    })();
+    return workerPoolPromise;
+  }
+
   let scanController: AbortController | null = null;
   let commitController: AbortController | null = null;
   let fetchController: AbortController | null = null;
@@ -189,6 +212,7 @@ export default function App() {
   }
 
   onMount(async () => {
+    getWorkerPool();
     const session = await checkSession();
     if (session.state === "unauthenticated") {
       setAuthState("unauthenticated");
@@ -359,6 +383,22 @@ export default function App() {
 
   function closeSidebar() {
     setSelectedRepo(null);
+  }
+
+  async function handleFileClick(repoPath: string, file: string, status: string) {
+    setDiffFile({ repo: repoPath, file, status });
+    setDiffContent(null);
+    try {
+      const result = await api.getDiff(repoPath, file, status as "staged" | "unstaged" | "untracked");
+      setDiffContent(result.diff);
+    } catch (e) {
+      setDiffContent(`Error: ${e instanceof Error ? e.message : String(e)}`);
+    }
+  }
+
+  function closeDiff() {
+    setDiffFile(null);
+    setDiffContent(null);
   }
 
   async function handleRefreshRepo(repoPath: string) {
@@ -549,7 +589,7 @@ export default function App() {
           "bg-zinc-900 border-emerald-500/30 ring-1 ring-emerald-500/10": isSelected() && !repo().status.error && repo().status.behind === 0 && !repo().status.hasChanges,
           "opacity-60": repo().cached && !isSelected(),
         }}
-        onClick={() => setSelectedRepo(isSelected() ? null : repo().path)}
+        onMouseDown={() => setSelectedRepo(isSelected() ? null : repo().path)}
       >
         <div class="flex items-center justify-between px-3 py-2">
           <div class="flex items-center gap-2.5 min-w-0">
@@ -603,16 +643,131 @@ export default function App() {
     );
   }
 
+  function DiffPanel() {
+    const info = diffFile();
+    if (!info) return null;
+
+    let containerRef: HTMLDivElement | undefined;
+    let fileDiffInstance: any = null;
+
+    function waitForHighlight(container: HTMLDivElement): Promise<void> {
+      return new Promise((resolve) => {
+        let resolved = false;
+        const done = () => { if (!resolved) { resolved = true; resolve(); } };
+
+        const tryCheck = () => {
+          if (resolved) return;
+          const host = container.querySelector("diffs-container");
+          const root = host?.shadowRoot;
+          if (!root) { requestAnimationFrame(tryCheck); return; }
+          if (root.querySelector("span[style*='--diffs-token-dark']")) {
+            requestAnimationFrame(done);
+            return;
+          }
+          requestAnimationFrame(tryCheck);
+        };
+        tryCheck();
+        setTimeout(done, 100);
+      });
+    }
+
+    async function renderDiffs(container: HTMLDivElement, raw: string) {
+      if (!raw) return;
+
+      const { processPatch, FileDiff } = await import("@pierre/diffs");
+      const pool = await getWorkerPool();
+
+      const parsed = processPatch(raw);
+      const file = parsed.files[0];
+      if (!file) return;
+
+      const staging = document.createElement("div");
+
+      const newInstance = new FileDiff({
+        theme: "pierre-dark",
+        themeType: "dark",
+        diffStyle: "unified",
+        diffIndicators: "bars",
+        overflow: "scroll",
+        hunkSeparators: "line-info",
+        disableBackground: false,
+        disableFileHeader: false,
+        lineDiffType: "none",
+      }, pool);
+
+      newInstance.render({
+        fileDiff: file,
+        containerWrapper: staging,
+        forceRender: true,
+      });
+
+      await waitForHighlight(staging);
+
+      if (fileDiffInstance) fileDiffInstance.cleanUp();
+      fileDiffInstance = newInstance;
+      container.innerHTML = "";
+      container.appendChild(staging);
+    }
+
+    createEffect(() => {
+      const content = diffContent();
+      const el = containerRef;
+      if (el && content !== undefined) {
+        if (content === null) return;
+        renderDiffs(el, content);
+      }
+    });
+
+    onCleanup(() => {
+      if (fileDiffInstance) {
+        fileDiffInstance.cleanUp();
+        fileDiffInstance = null;
+      }
+    });
+
+    return (
+      <>
+        <div class="fixed inset-0 z-35" onMouseDown={closeDiff} />
+        <div class="fixed top-0 right-80 z-40 h-full w-[60vw] max-w-[900px] bg-[#0a0a0c] border-l border-zinc-800/50 shadow-2xl flex flex-col">
+          <div class="flex items-center justify-between px-4 py-3 border-b border-zinc-800/50 shrink-0">
+            <div class="flex items-center gap-2 min-w-0">
+              <span class="text-[11px] px-1.5 py-0.5 rounded font-mono"
+                classList={{
+                  "bg-amber-500/10 text-amber-400/80 border border-amber-500/20": info.status === "staged",
+                  "bg-orange-500/10 text-orange-400/80 border border-orange-500/20": info.status === "unstaged",
+                  "bg-zinc-700/30 text-zinc-400 border border-zinc-600/30": info.status === "untracked",
+                }}
+              >{info.status}</span>
+              <span class="text-[12px] text-zinc-300 font-mono truncate">{info.file}</span>
+            </div>
+            <button
+              onMouseDown={closeDiff}
+              class="text-zinc-600 hover:text-zinc-400 transition-colors shrink-0 p-1.5"
+            >
+              <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
+              </svg>
+            </button>
+          </div>
+
+          <div class="flex-1 overflow-auto bg-[#0a0a0c]">
+            <div ref={containerRef} class="min-h-full" />
+          </div>
+        </div>
+      </>
+    );
+  }
+
   function Sidebar(props: { repo: RepoInfo }) {
     const repo = () => props.repo;
     return (
       <>
-        <div class="fixed inset-0 z-30" onClick={closeSidebar} />
+        <div class="fixed inset-0 z-30" onMouseDown={closeSidebar} />
         <div class="fixed top-0 right-0 z-40 h-full w-80 bg-[#09090b] border-l border-zinc-800/50 shadow-2xl p-5 overflow-y-auto">
         <div class="flex items-center justify-between mb-4">
           <h2 class="text-sm font-semibold text-zinc-100 truncate">{repo().name}</h2>
           <button
-            onClick={closeSidebar}
+            onMouseDown={closeSidebar}
             class="text-zinc-600 hover:text-zinc-400 transition-colors shrink-0 ml-2 p-1.5"
           >
             <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -692,12 +847,16 @@ export default function App() {
           <Show when={repo().status.stagedFiles?.length > 0 || repo().status.unstagedFiles?.length > 0 || repo().status.untrackedFiles?.length > 0}>
             <div class="border-t border-zinc-800/40 pt-3 mb-4">
               <div class="text-[11px] font-medium text-zinc-500 uppercase tracking-[0.1em] mb-2">Changed Files</div>
-              <div class="max-h-32 overflow-y-auto text-[11px] font-mono">
+              <div class="max-h-48 overflow-y-auto text-[11px] font-mono space-y-px">
                 <Show when={repo().status.stagedFiles?.length > 0}>
                   <div class="mb-1.5">
                     <div class="text-amber-400/70 mb-0.5">Staged:</div>
                     <For each={repo().status.stagedFiles}>{(f) =>
-                      <div class="text-zinc-400 pl-2 truncate" title={f}>{f}</div>
+                      <button
+                        onMouseDown={(e) => { e.stopPropagation(); handleFileClick(repo().path, f, "staged"); }}
+                        class="w-full text-left text-zinc-400 pl-2 truncate hover:bg-zinc-800/60 hover:text-zinc-200 rounded px-1 py-0.5 transition-colors"
+                        title={f}
+                      >{f}</button>
                     }</For>
                   </div>
                 </Show>
@@ -705,7 +864,11 @@ export default function App() {
                   <div class="mb-1.5">
                     <div class="text-orange-400/70 mb-0.5">Unstaged:</div>
                     <For each={repo().status.unstagedFiles}>{(f) =>
-                      <div class="text-zinc-400 pl-2 truncate" title={f}>{f}</div>
+                      <button
+                        onMouseDown={(e) => { e.stopPropagation(); handleFileClick(repo().path, f, "unstaged"); }}
+                        class="w-full text-left text-zinc-400 pl-2 truncate hover:bg-zinc-800/60 hover:text-zinc-200 rounded px-1 py-0.5 transition-colors"
+                        title={f}
+                      >{f}</button>
                     }</For>
                   </div>
                 </Show>
@@ -713,7 +876,11 @@ export default function App() {
                   <div class="mb-1.5">
                     <div class="text-zinc-500 mb-0.5">Untracked:</div>
                     <For each={repo().status.untrackedFiles}>{(f) =>
-                      <div class="text-zinc-500 pl-2 truncate" title={f}>{f}</div>
+                      <button
+                        onMouseDown={(e) => { e.stopPropagation(); handleFileClick(repo().path, f, "untracked"); }}
+                        class="w-full text-left text-zinc-500 pl-2 truncate hover:bg-zinc-800/60 hover:text-zinc-300 rounded px-1 py-0.5 transition-colors"
+                        title={f}
+                      >{f}</button>
                     }</For>
                   </div>
                 </Show>
@@ -814,7 +981,7 @@ export default function App() {
     return (
       <div class="mb-4 last:mb-0">
         <button
-          onClick={() => toggleCollapsed(props.title)}
+          onMouseDown={() => toggleCollapsed(props.title)}
           class="flex items-center gap-2 w-full text-left mb-1.5 group"
         >
           <svg
@@ -902,7 +1069,7 @@ export default function App() {
             </Show>
             <div class="relative">
               <button
-                onClick={() => { setShowSettings(!showSettings()); if (!showSettings()) setModelDraft(config().opencodeModel); }}
+                onMouseDown={() => { setShowSettings(!showSettings()); if (!showSettings()) setModelDraft(config().opencodeModel); }}
                 class="px-2 py-1.5 bg-zinc-900 hover:bg-zinc-800 border border-zinc-800 rounded-lg text-zinc-500 hover:text-zinc-300 transition-colors"
               >
                 <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -912,7 +1079,7 @@ export default function App() {
               </button>
               <Show when={showSettings()}>
                 <>
-                  <div class="fixed inset-0 z-10" onClick={() => setShowSettings(false)} />
+                  <div class="fixed inset-0 z-10" onMouseDown={() => setShowSettings(false)} />
                   <div class="absolute right-0 top-full mt-1 z-20 w-80 bg-zinc-900 border border-zinc-800 rounded-lg shadow-xl p-3 max-h-[80vh] overflow-y-auto">
                     <div class="text-[11px] font-medium text-zinc-400 mb-2 uppercase tracking-wider">OpenCode Model</div>
                     <input
@@ -942,7 +1109,7 @@ export default function App() {
                         <span class="text-[10px] text-zinc-500">Your token:</span>
                         <code class="text-[10px] text-zinc-400 font-mono bg-zinc-800 px-1.5 py-0.5 rounded select-all">{config().token || "loading..."}</code>
                         <button
-                          onClick={() => navigator.clipboard.writeText(config().token || "")}
+                          onMouseDown={() => navigator.clipboard.writeText(config().token || "")}
                           class="text-[10px] text-zinc-500 hover:text-zinc-300 ml-auto shrink-0"
                         >copy</button>
                       </div>
@@ -1019,19 +1186,19 @@ export default function App() {
 
         <Show when={machines().length > 0}>
           <div class="flex items-center gap-1 mb-3">
-            <button onClick={() => setMachineFilter(null)}
+            <button onMouseDown={() => setMachineFilter(null)}
               class="text-[11px] px-2 py-1 rounded transition-colors"
               classList={{ "bg-zinc-800 text-zinc-300": machineFilter() === null, "text-zinc-600 hover:text-zinc-400": machineFilter() !== null }}
             >All</button>
             <span class="text-zinc-800">·</span>
             <Show when={repos().some(r => r.machine === "local")}>
-              <button onClick={() => setMachineFilter("local")}
+              <button onMouseDown={() => setMachineFilter("local")}
                 class="text-[11px] px-2 py-1 rounded transition-colors"
                 classList={{ "bg-zinc-800 text-zinc-300": machineFilter() === "local", "text-zinc-600 hover:text-zinc-400": machineFilter() !== "local" }}
               >Local</button>
             </Show>
             <For each={machines()}>{(m) =>
-              <button onClick={() => setMachineFilter(m.name)}
+              <button onMouseDown={() => setMachineFilter(m.name)}
                 class="text-[11px] px-2 py-1 rounded transition-colors flex items-center gap-1"
                 classList={{ "bg-zinc-800 text-zinc-300": machineFilter() === m.name, "text-zinc-600 hover:text-zinc-400": machineFilter() !== m.name }}
               >
@@ -1194,9 +1361,13 @@ export default function App() {
         {(repo) => <Sidebar repo={repo} />}
       </Show>
 
+      <Show when={diffFile()}>
+        <DiffPanel />
+      </Show>
+
       <Show when={showDirModal()}>
         <div class="fixed inset-0 z-50 flex items-center justify-center p-6">
-          <div class="fixed inset-0 bg-black/60" onClick={() => setShowDirModal(false)} />
+          <div class="fixed inset-0 bg-black/60" onMouseDown={() => setShowDirModal(false)} />
           <div class="relative z-10 w-full max-w-md bg-zinc-900 border border-zinc-800 rounded-xl shadow-2xl p-5">
             <h2 class="text-sm font-semibold text-zinc-100 tracking-tight mb-1">Select Directory</h2>
             <p class="text-[11px] text-zinc-500 mb-3">Enter the full path of a directory to scan for git repositories.</p>
@@ -1213,7 +1384,7 @@ export default function App() {
             </Show>
             <div class="flex items-center justify-end gap-2 mt-3">
               <button
-                onClick={() => setShowDirModal(false)}
+                onMouseDown={() => setShowDirModal(false)}
                 class="px-3 py-1.5 bg-zinc-800 hover:bg-zinc-700 border border-zinc-700 rounded-lg text-[11px] font-medium text-zinc-400 transition-colors"
               >
                 Cancel

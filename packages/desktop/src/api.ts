@@ -260,6 +260,9 @@ export const api = {
   checkPull: (repo: RepoPath): Promise<{ ok: boolean; repo?: RepoData; error?: string }> =>
     send("checkPull", { repo }),
 
+  getDiff: (repo: string, file: string, status: "staged" | "unstaged" | "untracked"): Promise<{ file: string; diff: string }> =>
+    send("getDiff", { repo, file, status }),
+
   subscribeFetch: (onEvent: (ev: FetchEvent) => void): AbortController =>
     subscribe("fetchAll", undefined, (data) => {
       if (data.type === "ack") return
