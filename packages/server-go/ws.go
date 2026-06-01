@@ -329,15 +329,12 @@ func handleRescanRepo(client *WSClient, req WSRequest, deps *ServerDeps) {
 		return
 	}
 
-	status, err := deps.Git.GetStatusWithLock(client.ctx, repo)
-	if err != nil {
-		client.SendResult(req.ID, RescanResult{Ok: false, Error: strPtr("Failed to get status")})
+	updated := updateRepoInCache(client.ctx, deps, repo)
+	if updated == nil {
+		client.SendResult(req.ID, RescanResult{Ok: false, Error: strPtr("Failed to rescan repo")})
 		return
 	}
-
-	updated := makeRepoFromStatus(repo, status, deps.LocalName)
-	updateRepoInCache(client.ctx, deps, repo)
-	client.SendResult(req.ID, RescanResult{Ok: true, Repo: &updated})
+	client.SendResult(req.ID, RescanResult{Ok: true, Repo: updated})
 }
 
 func handleCheckPull(client *WSClient, req WSRequest, deps *ServerDeps) {
@@ -350,15 +347,12 @@ func handleCheckPull(client *WSClient, req WSRequest, deps *ServerDeps) {
 
 	deps.Git.RunWithLock(client.ctx, "fetch origin", repo, 30*time.Second)
 
-	status, err := deps.Git.GetStatusWithLock(client.ctx, repo)
-	if err != nil {
-		client.SendResult(req.ID, RescanResult{Ok: false, Error: strPtr("Failed to get status after fetch")})
+	updated := updateRepoInCache(client.ctx, deps, repo)
+	if updated == nil {
+		client.SendResult(req.ID, RescanResult{Ok: false, Error: strPtr("Failed to rescan repo after fetch")})
 		return
 	}
-
-	updated := makeRepoFromStatus(repo, status, deps.LocalName)
-	updateRepoInCache(client.ctx, deps, repo)
-	client.SendResult(req.ID, RescanResult{Ok: true, Repo: &updated})
+	client.SendResult(req.ID, RescanResult{Ok: true, Repo: updated})
 }
 
 func handleUpdateRepoSettings(client *WSClient, req WSRequest, deps *ServerDeps) {
@@ -704,14 +698,14 @@ func handleGetDiff(client *WSClient, req WSRequest, deps *ServerDeps) {
 	})
 }
 
-func updateRepoInCache(ctx context.Context, deps *ServerDeps, repoPath string) {
+func updateRepoInCache(ctx context.Context, deps *ServerDeps, repoPath string) *GitRepo {
 	status, err := deps.Git.GetStatus(ctx, repoPath)
 	if err != nil {
-		return
+		return nil
 	}
 	repos, err := deps.Cache.Load()
 	if err != nil {
-		return
+		return nil
 	}
 
 	name := filepath.Base(repoPath)
@@ -755,4 +749,5 @@ func updateRepoInCache(ctx context.Context, deps *ServerDeps, repoPath string) {
 
 	deps.Cache.Save(repos)
 	deps.Peers.NotifyReposUpdated()
+	return &updated
 }
