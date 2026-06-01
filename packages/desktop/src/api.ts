@@ -260,8 +260,17 @@ export const api = {
   checkPull: (repo: RepoPath): Promise<{ ok: boolean; repo?: RepoData; error?: string }> =>
     send("checkPull", { repo }),
 
-  getDiff: (repo: string, file: string, status: "staged" | "unstaged" | "untracked"): Promise<{ file: string; diff: string }> =>
-    send("getDiff", { repo, file, status }),
+  getDiff: async (repo: string, file: string, status: "staged" | "unstaged" | "untracked"): Promise<{ file: string; diff: string }> => {
+    logInfo("[diff] request", { repo, file, status })
+    try {
+      const result = await send<{ file: string; diff: string }>("getDiff", { repo, file, status })
+      logInfo("[diff] response", { repo, requestedFile: file, responseFile: result.file, status, bytes: result.diff.length, preview: result.diff.slice(0, 200) })
+      return result
+    } catch (e) {
+      logError("[diff] failed", { repo, file, status, error: e instanceof Error ? e.message : String(e) })
+      throw e
+    }
+  },
 
   subscribeFetch: (onEvent: (ev: FetchEvent) => void): AbortController =>
     subscribe("fetchAll", undefined, (data) => {

@@ -16,9 +16,9 @@ import (
 )
 
 type WSClient struct {
-	conn  *websocket.Conn
-	mu    sync.Mutex
-	ctx   context.Context
+	conn   *websocket.Conn
+	mu     sync.Mutex
+	ctx    context.Context
 	cancel context.CancelFunc
 }
 
@@ -657,31 +657,29 @@ func handleGetDiff(client *WSClient, req WSRequest, deps *ServerDeps) {
 		client.SendError(req.ID, `Missing "repo" or "file" parameter`)
 		return
 	}
+	log.Printf("[diff] request repo=%q file=%q status=%q", repo, file, statusType)
 
 	var diff string
 	var err error
 
 	switch statusType {
 	case "staged":
-		diff, err = deps.Git.RunWithLock(client.ctx, fmt.Sprintf("diff --cached -- %s", file), repo, 15*time.Second)
+		diff, err = deps.Git.RunArgsWithLock(client.ctx, []string{"diff", "--cached", "--", file}, repo, 15*time.Second)
 	case "unstaged":
-		diff, err = deps.Git.RunWithLock(client.ctx, fmt.Sprintf("diff -- %s", file), repo, 15*time.Second)
+		diff, err = deps.Git.RunArgsWithLock(client.ctx, []string{"diff", "--", file}, repo, 15*time.Second)
 	case "untracked":
-		diff, err = deps.Git.RunWithLock(client.ctx, fmt.Sprintf("diff --no-index /dev/null %s", file), repo, 15*time.Second)
-		if err != nil {
-			diff, err = deps.Git.RunWithLock(client.ctx, fmt.Sprintf("show :%s", file), repo, 15*time.Second)
-			if err != nil {
-				content, readErr := os.ReadFile(filepath.Join(repo, file))
-				if readErr != nil {
-					client.SendError(req.ID, fmt.Sprintf("Cannot read untracked file: %v", readErr))
-					return
-				}
-				diff = fmt.Sprintf("diff --git a/%s b/%s\nnew file mode 100644\n--- /dev/null\n+++ b/%s\n", file, file, file)
-				lines := strings.Split(string(content), "\n")
-				for _, line := range lines {
-					diff += "+" + line + "\n"
-				}
-			}
+		content, readErr := os.ReadFile(filepath.Join(repo, file))
+		if readErr != nil {
+			client.SendError(req.ID, fmt.Sprintf("Cannot read untracked file: %v", readErr))
+			return
+		}
+		lines := strings.Split(string(content), "\n")
+		if len(lines) > 0 && lines[len(lines)-1] == "" {
+			lines = lines[:len(lines)-1]
+		}
+		diff = fmt.Sprintf("diff --git a/%s b/%s\nnew file mode 100644\n--- /dev/null\n+++ b/%s\n@@ -0,0 +1,%d @@\n", file, file, file, len(lines))
+		for _, line := range lines {
+			diff += "+" + line + "\n"
 		}
 	default:
 		client.SendError(req.ID, `Invalid "status" parameter (must be staged, unstaged, or untracked)`)
@@ -689,9 +687,16 @@ func handleGetDiff(client *WSClient, req WSRequest, deps *ServerDeps) {
 	}
 
 	if err != nil {
+		log.Printf("[diff] error repo=%q file=%q status=%q err=%v", repo, file, statusType, err)
 		client.SendError(req.ID, fmt.Sprintf("Git diff failed: %v", err))
 		return
 	}
+	if diff == "" && statusType != "untracked" {
+		log.Printf("[diff] empty repo=%q file=%q status=%q", repo, file, statusType)
+		client.SendError(req.ID, fmt.Sprintf("No %s diff for %s. The repo status is probably stale.", statusType, file))
+		return
+	}
+	log.Printf("[diff] response repo=%q file=%q status=%q bytes=%d", repo, file, statusType, len(diff))
 
 	client.SendResult(req.ID, map[string]any{
 		"file": file,
@@ -751,5 +756,3 @@ func updateRepoInCache(ctx context.Context, deps *ServerDeps, repoPath string) {
 	deps.Cache.Save(repos)
 	deps.Peers.NotifyReposUpdated()
 }
-
-

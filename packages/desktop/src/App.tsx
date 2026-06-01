@@ -182,6 +182,16 @@ export default function App() {
   }
 
   let scanController: AbortController | null = null;
+  let settingsRef: HTMLDivElement | undefined;
+
+  createEffect(() => {
+    if (!showSettings()) return;
+    const handler = (e: MouseEvent) => {
+      if (settingsRef && !settingsRef.contains(e.target as Node)) setShowSettings(false);
+    };
+    document.addEventListener("mousedown", handler);
+    onCleanup(() => document.removeEventListener("mousedown", handler));
+  });
   let commitController: AbortController | null = null;
   let fetchController: AbortController | null = null;
   let repoBuffer: RepoInfo[] = [];
@@ -383,6 +393,7 @@ export default function App() {
 
   function closeSidebar() {
     setSelectedRepo(null);
+    closeDiff();
   }
 
   async function handleFileClick(repoPath: string, file: string, status: string) {
@@ -392,6 +403,7 @@ export default function App() {
       const result = await api.getDiff(repoPath, file, status as "staged" | "unstaged" | "untracked");
       setDiffContent(result.diff);
     } catch (e) {
+      void refreshRepoStatus(repoPath);
       setDiffContent(`Error: ${e instanceof Error ? e.message : String(e)}`);
     }
   }
@@ -409,6 +421,19 @@ export default function App() {
         const next = prev.slice();
         const idx = next.findIndex(r => r.path === repoPath);
         if (idx >= 0) next[idx] = updated;
+        return next;
+      });
+    }
+  }
+
+  async function refreshRepoStatus(repoPath: string) {
+    const result = await api.rescanRepo(repoPath);
+    if (result.ok && result.repo) {
+      const info = repoDataToInfo(result.repo);
+      setRepos(prev => {
+        const next = prev.slice();
+        const idx = next.findIndex(r => r.path === repoPath);
+        if (idx >= 0) next[idx] = info;
         return next;
       });
     }
@@ -578,6 +603,14 @@ export default function App() {
     const repo = () => props.repo;
     const isSelected = () => selectedRepo() === repo().path;
     const isRemote = () => repo().machine !== "local";
+    function selectRepo() {
+      if (isSelected()) {
+        setSelectedRepo(null);
+        return;
+      }
+      setSelectedRepo(repo().path);
+      void refreshRepoStatus(repo().path);
+    }
     return (
       <div
         class="border rounded-lg overflow-hidden transition-all duration-150 cursor-pointer"
@@ -589,7 +622,7 @@ export default function App() {
           "bg-zinc-900 border-emerald-500/30 ring-1 ring-emerald-500/10": isSelected() && !repo().status.error && repo().status.behind === 0 && !repo().status.hasChanges,
           "opacity-60": repo().cached && !isSelected(),
         }}
-        onMouseDown={() => setSelectedRepo(isSelected() ? null : repo().path)}
+        onMouseDown={selectRepo}
       >
         <div class="flex items-center justify-between px-3 py-2">
           <div class="flex items-center gap-2.5 min-w-0">
@@ -647,8 +680,18 @@ export default function App() {
     const info = diffFile();
     if (!info) return null;
 
+    let panelRef: HTMLDivElement | undefined;
     let containerRef: HTMLDivElement | undefined;
     let fileDiffInstance: any = null;
+
+    function onDocMouseDown(e: MouseEvent) {
+      if (!(e.target instanceof Element)) return;
+      const target = e.target;
+      if (target.closest("[data-sidebar-panel]")) return;
+      if (panelRef && !panelRef.contains(target)) closeDiff();
+    }
+    onMount(() => document.addEventListener("mousedown", onDocMouseDown));
+    onCleanup(() => document.removeEventListener("mousedown", onDocMouseDown));
 
     function waitForHighlight(container: HTMLDivElement): Promise<void> {
       return new Promise((resolve) => {
@@ -727,8 +770,7 @@ export default function App() {
 
     return (
       <>
-        <div class="fixed inset-0 z-35" onMouseDown={closeDiff} />
-        <div class="fixed top-0 right-80 z-40 h-full w-[60vw] max-w-[900px] bg-[#0a0a0c] border-l border-zinc-800/50 shadow-2xl flex flex-col">
+        <div ref={panelRef} data-diff-panel class="fixed top-0 right-80 z-40 h-full w-[60vw] max-w-[900px] bg-[#0a0a0c] border-l border-zinc-800/50 shadow-2xl flex flex-col pointer-events-auto">
           <div class="flex items-center justify-between px-4 py-3 border-b border-zinc-800/50 shrink-0">
             <div class="flex items-center gap-2 min-w-0">
               <span class="text-[11px] px-1.5 py-0.5 rounded font-mono"
@@ -760,10 +802,20 @@ export default function App() {
 
   function Sidebar(props: { repo: RepoInfo }) {
     const repo = () => props.repo;
+    let panelRef: HTMLDivElement | undefined;
+
+    function onDocMouseDown(e: MouseEvent) {
+      if (!(e.target instanceof Element)) return;
+      const target = e.target;
+      if (target.closest("[data-diff-panel]")) return;
+      if (panelRef && !panelRef.contains(target)) closeSidebar();
+    }
+    onMount(() => document.addEventListener("mousedown", onDocMouseDown));
+    onCleanup(() => document.removeEventListener("mousedown", onDocMouseDown));
+
     return (
       <>
-        <div class="fixed inset-0 z-30" onMouseDown={closeSidebar} />
-        <div class="fixed top-0 right-0 z-40 h-full w-80 bg-[#09090b] border-l border-zinc-800/50 shadow-2xl p-5 overflow-y-auto">
+        <div ref={panelRef} data-sidebar-panel class="fixed top-0 right-0 z-40 h-full w-80 bg-[#09090b] border-l border-zinc-800/50 shadow-2xl p-5 overflow-y-auto pointer-events-auto">
         <div class="flex items-center justify-between mb-4">
           <h2 class="text-sm font-semibold text-zinc-100 truncate">{repo().name}</h2>
           <button
@@ -982,7 +1034,7 @@ export default function App() {
       <div class="mb-4 last:mb-0">
         <button
           onMouseDown={() => toggleCollapsed(props.title)}
-          class="flex items-center gap-2 w-full text-left mb-1.5 group"
+          class="flex items-center gap-2 w-full text-left mb-1.5 group px-1.5 py-0.5 rounded hover:bg-zinc-800/40 transition-colors"
         >
           <svg
             class="w-2.5 h-2.5 text-zinc-700 transition-transform duration-150 group-hover:text-zinc-500"
@@ -1067,7 +1119,7 @@ export default function App() {
                 </button>
               </div>
             </Show>
-            <div class="relative">
+            <div class="relative" ref={settingsRef}>
               <button
                 onMouseDown={() => { setShowSettings(!showSettings()); if (!showSettings()) setModelDraft(config().opencodeModel); }}
                 class="px-2 py-1.5 bg-zinc-900 hover:bg-zinc-800 border border-zinc-800 rounded-lg text-zinc-500 hover:text-zinc-300 transition-colors"
@@ -1079,7 +1131,6 @@ export default function App() {
               </button>
               <Show when={showSettings()}>
                 <>
-                  <div class="fixed inset-0 z-10" onMouseDown={() => setShowSettings(false)} />
                   <div class="absolute right-0 top-full mt-1 z-20 w-80 bg-zinc-900 border border-zinc-800 rounded-lg shadow-xl p-3 max-h-[80vh] overflow-y-auto">
                     <div class="text-[11px] font-medium text-zinc-400 mb-2 uppercase tracking-wider">OpenCode Model</div>
                     <input

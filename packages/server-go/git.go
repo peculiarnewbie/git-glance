@@ -26,8 +26,8 @@ type repoLock struct {
 }
 
 type GitService struct {
-	mu     sync.Mutex
-	locks  map[string]*repoLock
+	mu    sync.Mutex
+	locks map[string]*repoLock
 }
 
 func NewGitService() *GitService {
@@ -73,6 +73,28 @@ func (g *GitService) execGit(ctx context.Context, args, repoPath string, timeout
 	return strings.TrimSpace(string(out)), nil
 }
 
+func (g *GitService) execGitRaw(ctx context.Context, args, repoPath string, timeout time.Duration) (string, error) {
+	if timeout == 0 {
+		timeout = 10 * time.Second
+	}
+	ctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+
+	cmd := exec.CommandContext(ctx, "git", strings.Fields(args)...)
+	cmd.Dir = repoPath
+	cmd.Env = append(cmd.Environ(), "GIT_TERMINAL_PROMPT=0")
+
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return "", &GitCommandError{
+			Command:  "git " + args,
+			RepoPath: repoPath,
+			Cause:    strings.TrimSpace(string(out)),
+		}
+	}
+	return strings.TrimRight(string(out), "\r\n"), nil
+}
+
 func (g *GitService) safeExec(ctx context.Context, args, repoPath string, timeout time.Duration) *string {
 	s, err := g.execGit(ctx, args, repoPath, timeout)
 	if err != nil {
@@ -89,6 +111,31 @@ func (g *GitService) RunWithLock(ctx context.Context, args, repoPath string, tim
 	unlock := g.withRepoLock(repoPath)
 	defer unlock()
 	return g.execGit(ctx, args, repoPath, timeout)
+}
+
+func (g *GitService) RunArgsWithLock(ctx context.Context, args []string, repoPath string, timeout time.Duration) (string, error) {
+	unlock := g.withRepoLock(repoPath)
+	defer unlock()
+	if timeout == 0 {
+		timeout = 10 * time.Second
+	}
+	ctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+
+	cmd := exec.CommandContext(ctx, "git", args...)
+	cmd.Dir = repoPath
+	cmd.Env = append(cmd.Environ(), "GIT_TERMINAL_PROMPT=0")
+
+	out, err := cmd.CombinedOutput()
+	trimmed := strings.TrimSpace(string(out))
+	if err != nil {
+		return trimmed, &GitCommandError{
+			Command:  "git " + strings.Join(args, " "),
+			RepoPath: repoPath,
+			Cause:    trimmed,
+		}
+	}
+	return trimmed, nil
 }
 
 func (g *GitService) RunWithStdinAndLock(ctx context.Context, args []string, stdin io.Reader, repoPath string, timeout time.Duration) (string, error) {
@@ -117,7 +164,7 @@ func (g *GitService) RunWithStdinAndLock(ctx context.Context, args []string, std
 }
 
 func (g *GitService) GetStatus(ctx context.Context, repoPath string) (*GitStatusResult, error) {
-	rawStatus, err := g.execGit(ctx, "status --porcelain", repoPath, 10*time.Second)
+	rawStatus, err := g.execGitRaw(ctx, "status --porcelain --untracked-files=all", repoPath, 10*time.Second)
 	if err != nil {
 		return nil, err
 	}
@@ -146,11 +193,7 @@ func (g *GitService) GetStatus(ctx context.Context, repoPath string) (*GitStatus
 		if l == "" {
 			continue
 		}
-		// Extract file path (after the 2-char status code and space)
-		filePath := ""
-		if len(l) > 3 {
-			filePath = strings.TrimSpace(l[3:])
-		}
+		filePath := parsePorcelainPath(l)
 		if strings.HasPrefix(l, "??") {
 			untracked++
 			if filePath != "" {
@@ -202,6 +245,21 @@ func (g *GitService) GetStatus(ctx context.Context, repoPath string) (*GitStatus
 		LastCommitTime: lastCommitTime,
 		WeekCommits:    weekCommits,
 	}, nil
+}
+
+func parsePorcelainPath(line string) string {
+	if len(line) <= 2 {
+		return ""
+	}
+	start := 2
+	if len(line) > 2 && line[2] == ' ' {
+		start = 3
+	}
+	path := strings.TrimSpace(line[start:])
+	if idx := strings.LastIndex(path, " -> "); idx >= 0 {
+		path = path[idx+4:]
+	}
+	return path
 }
 
 func (g *GitService) GetStatusWithLock(ctx context.Context, repoPath string) (*GitStatusResult, error) {
