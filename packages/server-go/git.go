@@ -141,18 +141,33 @@ func (g *GitService) GetStatus(ctx context.Context, repoPath string) (*GitStatus
 
 	lines := strings.Split(rawStatus, "\n")
 	var staged, unstaged, untracked int
+	var stagedFiles, unstagedFiles, untrackedFiles []string
 	for _, l := range lines {
 		if l == "" {
 			continue
 		}
+		// Extract file path (after the 2-char status code and space)
+		filePath := ""
+		if len(l) > 3 {
+			filePath = strings.TrimSpace(l[3:])
+		}
 		if strings.HasPrefix(l, "??") {
 			untracked++
+			if filePath != "" {
+				untrackedFiles = append(untrackedFiles, filePath)
+			}
 		} else {
 			if l[0] != ' ' {
 				staged++
+				if filePath != "" {
+					stagedFiles = append(stagedFiles, filePath)
+				}
 			}
 			if len(l) > 1 && l[1] != ' ' {
 				unstaged++
+				if filePath != "" {
+					unstagedFiles = append(unstagedFiles, filePath)
+				}
 			}
 		}
 	}
@@ -177,8 +192,11 @@ func (g *GitService) GetStatus(ctx context.Context, repoPath string) (*GitStatus
 		Remote:         remoteOption,
 		HasChanges:     hasChanges,
 		Staged:         staged,
+		StagedFiles:    stagedFiles,
 		Unstaged:       unstaged,
+		UnstagedFiles:  unstagedFiles,
 		Untracked:      untracked,
+		UntrackedFiles: untrackedFiles,
 		Ahead:          ahead,
 		Behind:         behind,
 		LastCommitTime: lastCommitTime,

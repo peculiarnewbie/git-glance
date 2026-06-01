@@ -143,7 +143,8 @@ function subscribe(action: string, params: Record<string, any> | undefined, onEv
 
 export interface RepoData {
   name: string; path: string; branch: string | null; hasChanges: boolean
-  staged: number; unstaged: number; untracked: number
+  staged: number; stagedFiles: string[]; unstaged: number; unstagedFiles: string[]
+  untracked: number; untrackedFiles: string[]
   ahead: number; behind: number; remote: string | null
   lastCommitTime: number | null; weekCommits: number; lastScanTime: number | null
   error: string | null; machine: string
@@ -168,8 +169,11 @@ export interface RepoInfo {
     remote: RepoRemote;
     hasChanges: boolean;
     staged: number;
+    stagedFiles: string[];
     unstaged: number;
+    unstagedFiles: string[];
     untracked: number;
+    untrackedFiles: string[];
     ahead: number;
     behind: number;
     lastCommitTime: number | null;
@@ -311,8 +315,10 @@ export function repoDataToInfo(r: RepoData): RepoInfo {
     hidden: r.settings?.hidden ?? false,
     status: {
       branch: r.branch || "", remote: r.remote || null,
-      hasChanges: r.hasChanges, staged: r.staged, unstaged: r.unstaged,
-      untracked: r.untracked, ahead: r.ahead, behind: r.behind,
+      hasChanges: r.hasChanges, staged: r.staged, stagedFiles: r.stagedFiles || [],
+      unstaged: r.unstaged, unstagedFiles: r.unstagedFiles || [],
+      untracked: r.untracked, untrackedFiles: r.untrackedFiles || [],
+      ahead: r.ahead, behind: r.behind,
       lastCommitTime: r.lastCommitTime, weekCommits: r.weekCommits,
       error: r.error || undefined,
     },
@@ -321,7 +327,9 @@ export function repoDataToInfo(r: RepoData): RepoInfo {
 
 interface GitStatus {
   branch: string; remote: string | null; hasChanges: boolean
-  staged: number; unstaged: number; untracked: number
+  staged: number; stagedFiles: string[]
+  unstaged: number; unstagedFiles: string[]
+  untracked: number; untrackedFiles: string[]
   ahead: number; behind: number; lastCommitTime: number | null
   weekCommits: number; error?: string
 }

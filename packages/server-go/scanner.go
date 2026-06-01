@@ -61,8 +61,11 @@ func scanOneRepo(ctx context.Context, git *GitService, repoPath, machine string)
 		Branch:         &status.Branch,
 		HasChanges:     status.HasChanges,
 		Staged:         status.Staged,
+		StagedFiles:    status.StagedFiles,
 		Unstaged:       status.Unstaged,
+		UnstagedFiles:  status.UnstagedFiles,
 		Untracked:      status.Untracked,
+		UntrackedFiles: status.UntrackedFiles,
 		Ahead:          status.Ahead,
 		Behind:         status.Behind,
 		Remote:         status.Remote,
@@ -162,23 +165,26 @@ func fetchReposConcurrently(ctx context.Context, git *GitService, scannedResults
 				if status.LastCommitTime != nil {
 					commitTimeMs = *status.LastCommitTime * 1000
 				}
-				updated := GitRepo{
-					Name:           repo.Name,
-					Path:           repo.Path,
-					Branch:         &status.Branch,
-					HasChanges:     status.HasChanges,
-					Staged:         status.Staged,
-					Unstaged:       status.Unstaged,
-					Untracked:      status.Untracked,
-					Ahead:          status.Ahead,
-					Behind:         status.Behind,
-					Remote:         status.Remote,
-					LastCommitTime: &commitTimeMs,
-					WeekCommits:    status.WeekCommits,
-					LastScanTime:   &now,
-					Machine:        repo.Machine,
-					Settings:       repo.Settings,
-				}
+			updated := GitRepo{
+				Name:           repo.Name,
+				Path:           repo.Path,
+				Branch:         &status.Branch,
+				HasChanges:     status.HasChanges,
+				Staged:         status.Staged,
+				StagedFiles:    status.StagedFiles,
+				Unstaged:       status.Unstaged,
+				UnstagedFiles:  status.UnstagedFiles,
+				Untracked:      status.Untracked,
+				UntrackedFiles: status.UntrackedFiles,
+				Ahead:          status.Ahead,
+				Behind:         status.Behind,
+				Remote:         status.Remote,
+				LastCommitTime: &commitTimeMs,
+				WeekCommits:    status.WeekCommits,
+				LastScanTime:   &now,
+				Machine:        repo.Machine,
+				Settings:       repo.Settings,
+			}
 				fetchRes <- fetchResult{i, updated}
 			} else {
 				fetchRes <- fetchResult{i, repo}

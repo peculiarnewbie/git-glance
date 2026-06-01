@@ -689,6 +689,38 @@ export default function App() {
             </div>
           </div>
 
+          <Show when={repo().status.stagedFiles?.length > 0 || repo().status.unstagedFiles?.length > 0 || repo().status.untrackedFiles?.length > 0}>
+            <div class="border-t border-zinc-800/40 pt-3 mb-4">
+              <div class="text-[11px] font-medium text-zinc-500 uppercase tracking-[0.1em] mb-2">Changed Files</div>
+              <div class="max-h-32 overflow-y-auto text-[11px] font-mono">
+                <Show when={repo().status.stagedFiles?.length > 0}>
+                  <div class="mb-1.5">
+                    <div class="text-amber-400/70 mb-0.5">Staged:</div>
+                    <For each={repo().status.stagedFiles}>{(f) =>
+                      <div class="text-zinc-400 pl-2 truncate" title={f}>{f}</div>
+                    }</For>
+                  </div>
+                </Show>
+                <Show when={repo().status.unstagedFiles?.length > 0}>
+                  <div class="mb-1.5">
+                    <div class="text-orange-400/70 mb-0.5">Unstaged:</div>
+                    <For each={repo().status.unstagedFiles}>{(f) =>
+                      <div class="text-zinc-400 pl-2 truncate" title={f}>{f}</div>
+                    }</For>
+                  </div>
+                </Show>
+                <Show when={repo().status.untrackedFiles?.length > 0}>
+                  <div class="mb-1.5">
+                    <div class="text-zinc-500 mb-0.5">Untracked:</div>
+                    <For each={repo().status.untrackedFiles}>{(f) =>
+                      <div class="text-zinc-500 pl-2 truncate" title={f}>{f}</div>
+                    }</For>
+                  </div>
+                </Show>
+              </div>
+            </div>
+          </Show>
+
           <Show when={repo().machine !== "local"}>
             <div class="mb-3 px-2 py-1 rounded text-[11px] bg-indigo-500/10 text-indigo-400/70 border border-indigo-500/20">
               Machine: {repo().machine}

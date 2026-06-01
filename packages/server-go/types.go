@@ -14,8 +14,11 @@ type GitRepo struct {
 	Branch         *string          `json:"branch"`
 	HasChanges     bool             `json:"hasChanges"`
 	Staged         int              `json:"staged"`
+	StagedFiles    []string         `json:"stagedFiles"`
 	Unstaged       int              `json:"unstaged"`
+	UnstagedFiles  []string         `json:"unstagedFiles"`
 	Untracked      int              `json:"untracked"`
+	UntrackedFiles []string         `json:"untrackedFiles"`
 	Ahead          int              `json:"ahead"`
 	Behind         int              `json:"behind"`
 	Remote         *string          `json:"remote"`
@@ -104,8 +107,11 @@ type GitStatusResult struct {
 	Remote         *string
 	HasChanges     bool
 	Staged         int
+	StagedFiles    []string
 	Unstaged       int
+	UnstagedFiles  []string
 	Untracked      int
+	UntrackedFiles []string
 	Ahead          int
 	Behind         int
 	LastCommitTime *int64
