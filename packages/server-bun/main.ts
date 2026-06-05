@@ -4,7 +4,6 @@ import { homedir } from "os";
 import { CacheService } from "./cache";
 import { GitService } from "./git";
 import { PeerManager } from "./peer";
-import { embeddedAssets } from "./generated-assets";
 import {
   handleWSOpen,
   handleWSMessage,
@@ -90,7 +89,9 @@ function fileExists(path: string): boolean {
 function getStaticDir(): string {
   if (staticDir) return staticDir;
 
+  const binaryDir = resolve(process.execPath, "..");
   const candidates = [
+    join(binaryDir, "renderer-dist"),
     join(process.cwd(), "public"),
     join(process.cwd(), "..", "desktop", "renderer-dist"),
   ];
@@ -98,12 +99,11 @@ function getStaticDir(): string {
   for (const c of candidates) {
     const abs = resolve(c);
     if (fileExists(join(abs, "index.html"))) {
-      console.log(`Serving static files from ${abs}`);
+      console.log(`Serving frontend from ${abs}`);
       return abs;
     }
   }
 
-  console.log("No static directory found, running API-only mode");
   return "";
 }
 
@@ -152,25 +152,7 @@ const server = Bun.serve({
       return Response.redirect(redirect, 302);
     }
 
-    // Static file serving — embedded assets first, then filesystem
-    {
-      let assetPath = path === "/" ? "index.html" : path.replace(/^\//, "");
-      const embedded = embeddedAssets[assetPath];
-      if (embedded) {
-        return new Response(embedded.content, {
-          headers: { "Content-Type": embedded.mimeType },
-        });
-      }
-
-      if (!embedded && !assetPath.includes(".")) {
-        const indexEmbedded = embeddedAssets["index.html"];
-        if (indexEmbedded) {
-          return new Response(indexEmbedded.content, {
-            headers: { "Content-Type": "text/html" },
-          });
-        }
-      }
-    }
+    // Static file serving
     if (resolvedStaticDir) {
       let filePath = join(resolvedStaticDir, path);
 

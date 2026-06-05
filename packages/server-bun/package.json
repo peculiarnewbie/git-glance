@@ -5,7 +5,7 @@
   "scripts": {
     "dev": "bun run main.ts",
     "start": "bun run main.ts",
-    "build:compile": "bun run scripts/embed-assets.ts && bun build main.ts --compile --minify --bytecode --target=bun --outfile dist/server-bun"
+    "build:compile": "bun run scripts/build-compiled.ts"
   },
   "devDependencies": {
     "@types/bun": "latest"
