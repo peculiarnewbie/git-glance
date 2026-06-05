@@ -21,7 +21,7 @@ func hostnameOrDefault() string {
 }
 
 func main() {
-	port := flag.Int("port", 3456, "HTTP server port")
+	port := flag.Int("port", 3451, "HTTP server port")
 	staticDir := flag.String("static", "", "Static files directory")
 	devURL := flag.String("dev-url", "", "Dev URL to redirect to (e.g. http://localhost:8912)")
 	machineName := flag.String("name", "", "Local machine name (default: hostname)")

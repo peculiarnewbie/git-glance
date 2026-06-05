@@ -3,7 +3,7 @@ import { createCliRenderer, BoxRenderable, TextRenderable } from "@opentui/core"
 import * as Schema from "effect/Schema"
 import { GitRepo, ScanProgress } from "@git-glance/schema"
 
-const SERVER_HOST = process.env["GIT_GLANCE_HOST"] ?? "http://localhost:3456"
+const SERVER_HOST = process.env["GIT_GLANCE_HOST"] ?? "http://localhost:3451"
 
 // ─── Network helpers — all async work runs BEFORE the renderer ─────
 

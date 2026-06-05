@@ -29,7 +29,7 @@ User launches Git Glance
   Bun main process (packages/desktop/src/bun/index.ts)
          │
          ├── 1. Find server binary (bundled inside app)
-         ├── 2. Bun.spawn(["git-glance-serve", "--port", "3456"])
+         ├── 2. Bun.spawn(["git-glance-serve", "--port", "3451"])
          ├── 3. Wait for HTTP health check
          ├── 4. Create BrowserWindow → views://mainview/index.html
          │      (Solid.js app, loaded in system WebView)
@@ -129,7 +129,7 @@ import { Utils, Events } from "electrobun/bun"
 import { join } from "node:path"
 import { existsSync } from "node:fs"
 
-const PORT = 3456
+const PORT = 3451
 
 ApplicationMenu.setApplicationMenu([
   { submenu: [{ label: "Quit", role: "quit" }] },

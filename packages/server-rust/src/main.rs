@@ -6,11 +6,7 @@ mod scanner;
 mod types;
 mod ws;
 
-use mimalloc::MiMalloc;
 use std::net::SocketAddr;
-
-#[global_allocator]
-static GLOBAL: MiMalloc = MiMalloc;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -27,19 +23,31 @@ struct AppState {
     dev_url: Option<String>,
 }
 
+struct CliArgs {
+    port: u16,
+    static_dir: Option<String>,
+    dev_url: Option<String>,
+    machine_name: Option<String>,
+    token: Option<String>,
+    install_service: bool,
+    uninstall_service: bool,
+}
+
 fn hostname_or_default() -> String {
     hostname::get()
         .map(|h| h.to_string_lossy().to_string())
         .unwrap_or_else(|_| "local".to_string())
 }
 
-fn parse_args() -> (u16, Option<String>, Option<String>, String, Option<String>) {
+fn parse_args() -> CliArgs {
     let args: Vec<String> = std::env::args().collect();
-    let mut port = 3456u16;
+    let mut port = 3451u16;
     let mut static_dir = None;
     let mut dev_url = None;
     let mut machine_name = None;
     let mut token = None;
+    let mut install_service = false;
+    let mut uninstall_service = false;
 
     let mut i = 1;
     while i < args.len() {
@@ -47,7 +55,7 @@ fn parse_args() -> (u16, Option<String>, Option<String>, String, Option<String>)
             "--port" => {
                 i += 1;
                 if let Some(v) = args.get(i) {
-                    port = v.parse().unwrap_or(3456);
+                    port = v.parse().unwrap_or(3451);
                 }
             }
             "--static" => {
@@ -65,6 +73,16 @@ fn parse_args() -> (u16, Option<String>, Option<String>, String, Option<String>)
             "--token" => {
                 i += 1;
                 token = args.get(i).cloned();
+            }
+            "--install-service" => {
+                install_service = true;
+            }
+            "--uninstall-service" => {
+                uninstall_service = true;
+            }
+            "--help" | "-h" => {
+                print_help();
+                std::process::exit(0);
             }
             _ => {}
         }
@@ -86,14 +104,194 @@ fn parse_args() -> (u16, Option<String>, Option<String>, String, Option<String>)
         machine_name = Some(v);
     }
 
-    let machine_name = machine_name.unwrap_or_else(hostname_or_default);
+    CliArgs {
+        port,
+        static_dir,
+        dev_url,
+        machine_name,
+        token,
+        install_service,
+        uninstall_service,
+    }
+}
 
-    (port, static_dir, dev_url, machine_name, token)
+fn print_help() {
+    println!("git-glance-serve — git repository dashboard server\n");
+    println!("USAGE:");
+    println!("  git-glance-serve [OPTIONS]\n");
+    println!("OPTIONS:");
+    println!("  --port <PORT>              Server port (default: 3451, env: PORT)");
+    println!("  --static <DIR>             Static files directory (env: STATIC_DIR)");
+    println!("  --dev-url <URL>            Vite dev server URL for proxy (env: DEV_URL)");
+    println!("  --name <NAME>              Machine name (env: MACHINE_NAME, default: hostname)");
+    println!("  --token <TOKEN>            Peer authentication token");
+    println!("  --install-service          Install as systemd user service (auto-start on login)");
+    println!("  --uninstall-service        Remove systemd user service");
+    println!("  -h, --help                 Show this help");
+}
+
+const SERVICE_NAME: &str = "git-glance";
+
+fn systemd_user_dir() -> PathBuf {
+    dirs::config_dir()
+        .expect("cannot get config dir")
+        .join("systemd")
+        .join("user")
+}
+
+fn generate_unit(port: u16, static_dir: &str, binary: &str) -> String {
+    format!(
+        r#"[Unit]
+Description=Git Glance Dashboard
+After=network.target
+
+[Service]
+Type=simple
+ExecStart={binary} --static {static_dir} --port {port}
+Restart=on-failure
+RestartSec=5
+Environment=CONFIG_DIR=%h/.git-glance
+
+[Install]
+WantedBy=default.target
+"#,
+        binary = binary,
+        static_dir = static_dir,
+        port = port,
+    )
+}
+
+fn resolve_binary_path() -> String {
+    std::env::current_exe()
+        .map(|p| p.to_string_lossy().to_string())
+        .unwrap_or_else(|_| format!("git-glance-serve"))
+}
+
+fn resolve_static_dir(cli_static: &Option<String>) -> String {
+    if let Some(d) = cli_static {
+        return std::fs::canonicalize(d)
+            .map(|p| p.to_string_lossy().to_string())
+            .unwrap_or_else(|_| d.clone());
+    }
+    let binary_dir = std::env::current_exe()
+        .ok()
+        .and_then(|p| p.parent().map(|p| p.to_path_buf()));
+
+    let candidates = vec![
+        PathBuf::from("public"),
+        PathBuf::from("../desktop/renderer-dist"),
+        PathBuf::from("../../desktop/renderer-dist"),
+        PathBuf::from("packages/desktop/renderer-dist"),
+    ];
+    if let Some(ref bin_dir) = binary_dir {
+        for c in &candidates {
+            let abs = bin_dir.join(c);
+            if abs.join("index.html").exists() {
+                return abs.to_string_lossy().to_string();
+            }
+        }
+    }
+    for c in &candidates {
+        if let Ok(abs) = std::env::current_dir().map(|cwd| cwd.join(c)) {
+            if abs.join("index.html").exists() {
+                return abs.to_string_lossy().to_string();
+            }
+        }
+    }
+    eprintln!("warning: no static directory found, using 'public'");
+    "public".to_string()
+}
+
+fn install_service(args: &CliArgs) {
+    let binary = resolve_binary_path();
+    let static_dir = resolve_static_dir(&args.static_dir);
+    let unit_dir = systemd_user_dir();
+    let unit_path = unit_dir.join(format!("{}.service", SERVICE_NAME));
+    let unit_content = generate_unit(args.port, &static_dir, &binary);
+
+    std::fs::create_dir_all(&unit_dir).expect("cannot create systemd user dir");
+    std::fs::write(&unit_path, &unit_content).expect("cannot write unit file");
+
+    println!("Wrote {}", unit_path.display());
+
+    let r = std::process::Command::new("systemctl")
+        .args(["--user", "daemon-reload"])
+        .status();
+    if r.is_err() {
+        eprintln!("warning: could not run systemctl daemon-reload");
+    }
+
+    let r = std::process::Command::new("systemctl")
+        .args(["--user", "enable", SERVICE_NAME])
+        .status();
+    match r {
+        Ok(s) if s.success() => println!("Enabled {}", SERVICE_NAME),
+        _ => eprintln!("warning: could not enable service"),
+    }
+
+    let r = std::process::Command::new("systemctl")
+        .args(["--user", "restart", SERVICE_NAME])
+        .status();
+    match r {
+        Ok(s) if s.success() => println!("Started {}", SERVICE_NAME),
+        _ => eprintln!("warning: could not start service"),
+    }
+
+    println!("\ngit-glance is now installed as a user service.");
+    println!("It will auto-start on login. Manage with:");
+    println!("  systemctl --user status {SERVICE_NAME}");
+    println!("  systemctl --user stop {SERVICE_NAME}");
+    println!("  systemctl --user restart {SERVICE_NAME}");
+    println!("  journalctl --user -u {SERVICE_NAME} -f");
+}
+
+fn uninstall_service() {
+    let unit_dir = systemd_user_dir();
+    let unit_path = unit_dir.join(format!("{}.service", SERVICE_NAME));
+
+    let _ = std::process::Command::new("systemctl")
+        .args(["--user", "stop", SERVICE_NAME])
+        .status();
+
+    let _ = std::process::Command::new("systemctl")
+        .args(["--user", "disable", SERVICE_NAME])
+        .status();
+
+    if unit_path.exists() {
+        std::fs::remove_file(&unit_path).expect("cannot remove unit file");
+        println!("Removed {}", unit_path.display());
+    } else {
+        println!("Service file not found at {}", unit_path.display());
+    }
+
+    let _ = std::process::Command::new("systemctl")
+        .args(["--user", "daemon-reload"])
+        .status();
+
+    println!("git-glance service uninstalled.");
 }
 
 #[tokio::main]
 async fn main() {
-    let (port, static_dir_arg, dev_url, machine_name, token_arg) = parse_args();
+    let args = parse_args();
+
+    if args.install_service {
+        install_service(&args);
+        return;
+    }
+    if args.uninstall_service {
+        uninstall_service();
+        return;
+    }
+
+    let port = args.port;
+    let static_dir_arg = args.static_dir.clone();
+    let dev_url = args.dev_url.clone();
+    let machine_name = args
+        .machine_name
+        .clone()
+        .unwrap_or_else(hostname_or_default);
+    let token_arg = args.token.clone();
 
     let home_dir = dirs::home_dir().expect("cannot get home dir");
     let config_dir = std::env::var("CONFIG_DIR").unwrap_or_else(|_| {
@@ -177,8 +375,8 @@ async fn main() {
         .fallback(get(static_handler))
         .with_state(state);
 
-    let addr = SocketAddr::from(([0, 0, 0, 0], port));
-    println!("Starting server on {}", addr);
+    let addr = SocketAddr::from(([127, 0, 0, 1], port));
+    println!("Starting server on http://git-glance.local:{}", port);
 
     let listener = tokio::net::TcpListener::bind(addr).await.unwrap();
     axum::serve(listener, app.into_make_service())

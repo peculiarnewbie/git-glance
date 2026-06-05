@@ -5,6 +5,30 @@ use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::sync::mpsc;
 
+#[cfg(target_os = "linux")]
+extern "C" {
+    fn malloc_trim(_pad: usize) -> i32;
+}
+
+pub fn release_memory() {
+    #[cfg(target_os = "linux")]
+    unsafe {
+        malloc_trim(0);
+    }
+}
+
+pub fn log_rss(label: &str) {
+    if let Ok(data) = std::fs::read("/proc/self/status") {
+        let s = String::from_utf8_lossy(&data);
+        for line in s.lines() {
+            if line.starts_with("VmRSS:") {
+                eprintln!("[mem] {} {}", label, line.trim());
+                break;
+            }
+        }
+    }
+}
+
 use crate::cache::CacheService;
 use crate::git::GitService;
 use crate::types::{GitRepo, GitRepoSettings, ScanProgress};
@@ -144,6 +168,8 @@ pub async fn scan_all(
     machine: String,
     progress_tx: mpsc::Sender<ScanProgress>,
 ) {
+    log_rss("scan_all start");
+    release_memory();
     let repo_paths = find_git_repos(&root_dir);
     let total = repo_paths.len();
 
@@ -159,10 +185,12 @@ pub async fn scan_all(
     // Build a lightweight path→settings map from cache
     // instead of cloning the full repo list into every concurrent task
     let existing = cache.load().await;
-    let settings_map: HashMap<String, GitRepoSettings> = existing
-        .iter()
-        .filter_map(|r| r.settings.as_ref().map(|s| (r.path.clone(), s.clone())))
-        .collect();
+    let settings_map: Arc<HashMap<String, GitRepoSettings>> = Arc::new(
+        existing
+            .iter()
+            .filter_map(|r| r.settings.as_ref().map(|s| (r.path.clone(), s.clone())))
+            .collect(),
+    );
     drop(existing);
 
     // Scan concurrently (8 at a time)
@@ -176,7 +204,7 @@ pub async fn scan_all(
         let path = path.clone();
         let machine = machine.clone();
         let sem = sem.clone();
-        let settings_map = settings_map.clone();
+        let settings_map = Arc::clone(&settings_map);
 
         handles.push(tokio::spawn(async move {
             let _permit = sem.acquire().await.unwrap();
@@ -238,6 +266,7 @@ pub async fn scan_all(
     }
 
     let scanned_results: Vec<GitRepo> = results.into_iter().flatten().collect();
+    log_rss("scan_all after scan phase");
 
     if !SCAN_CANCELED.load(Ordering::SeqCst) {
         cache.save(&scanned_results).await;
@@ -314,6 +343,7 @@ pub async fn scan_all(
     for (idx, updated) in fetch_results {
         final_results[idx] = updated;
     }
+    log_rss("scan_all after fetch phase");
 
     if !SCAN_CANCELED.load(Ordering::SeqCst) {
         cache.save(&final_results).await;
@@ -331,6 +361,8 @@ pub async fn scan_all(
     }
 
     git.cleanup_locks().await;
+    release_memory();
+    log_rss("scan_all end");
 
     let _ = progress_tx
         .send(ScanProgress {
@@ -349,6 +381,8 @@ pub async fn scan_only(
     machine: String,
     progress_tx: mpsc::Sender<ScanProgress>,
 ) {
+    log_rss("scan_only start");
+    release_memory();
     let repo_paths = find_git_repos(&root_dir);
     let total = repo_paths.len();
 
@@ -362,10 +396,12 @@ pub async fn scan_only(
         .await;
 
     let existing = cache.load().await;
-    let settings_map: HashMap<String, GitRepoSettings> = existing
-        .iter()
-        .filter_map(|r| r.settings.as_ref().map(|s| (r.path.clone(), s.clone())))
-        .collect();
+    let settings_map: Arc<HashMap<String, GitRepoSettings>> = Arc::new(
+        existing
+            .iter()
+            .filter_map(|r| r.settings.as_ref().map(|s| (r.path.clone(), s.clone())))
+            .collect(),
+    );
     drop(existing);
 
     let sem = Arc::new(tokio::sync::Semaphore::new(8));
@@ -377,7 +413,7 @@ pub async fn scan_only(
         let path = path.clone();
         let machine = machine.clone();
         let sem = sem.clone();
-        let settings_map = settings_map.clone();
+        let settings_map = Arc::clone(&settings_map);
 
         handles.push(tokio::spawn(async move {
             let _permit = sem.acquire().await.unwrap();
@@ -433,12 +469,15 @@ pub async fn scan_only(
     }
 
     let scanned_results: Vec<GitRepo> = results.into_iter().flatten().collect();
+    log_rss("scan_only after scan phase");
 
     if !SCAN_CANCELED.load(Ordering::SeqCst) {
         cache.save(&scanned_results).await;
     }
 
     git.cleanup_locks().await;
+    release_memory();
+    log_rss("scan_only end");
 
     let _ = progress_tx
         .send(ScanProgress {

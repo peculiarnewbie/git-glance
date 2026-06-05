@@ -24,7 +24,7 @@ if (!existsSync(join(staticDir, "index.html"))) {
   process.exit(1)
 }
 
-const proc = spawn(serverBin, ["--static", staticDir, "--port", "3456"], {
+const proc = spawn(serverBin, ["--static", staticDir, "--port", "3451"], {
   stdio: "inherit",
   env: { ...process.env },
 })

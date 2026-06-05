@@ -16,7 +16,6 @@ rand = "0.8"
 hex = "0.4"
 hostname = "0.4"
 url = "2"
-mimalloc = { version = "0.1", default-features = false }
 
 [profile.release]
 strip = true

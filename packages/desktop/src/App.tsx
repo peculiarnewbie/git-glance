@@ -1207,7 +1207,7 @@ export default function App() {
                         <input
                           value={machineUrlDraft()}
                           onInput={(e) => setMachineUrlDraft(e.currentTarget.value)}
-                          placeholder="http://host:3456"
+                          placeholder="http://git-glance.local:3451"
                           class="flex-1 bg-zinc-800 border border-zinc-700 rounded px-2 py-1.5 text-[11px] text-zinc-300 focus:outline-none focus:border-zinc-500 min-w-0"
                         />
                         <input

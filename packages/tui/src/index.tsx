@@ -4,7 +4,7 @@ import * as Schema from "effect/Schema"
 import { GitRepo, ScanProgress, RepoName, RepoPath, RepoBranch, RepoRemote, RepoError } from "@git-glance/schema"
 
 // ─── Config ──────────────────────────────────────────────────────────
-const SERVER_HOST = process.env["GIT_GLANCE_HOST"] ?? "http://localhost:3456"
+const SERVER_HOST = process.env["GIT_GLANCE_HOST"] ?? "http://localhost:3451"
 
 // ─── HTTP helpers ────────────────────────────────────────────────────
 

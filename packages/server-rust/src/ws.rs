@@ -913,6 +913,8 @@ async fn handle_fetch_all(req: &WSRequest, deps: &ServerDeps, tx: &mpsc::Sender<
         ),
     )
     .await;
+    scanner::release_memory();
+    scanner::log_rss("fetch_all end");
     send_response(tx, WSResponse::done(&req.id)).await;
 }
 

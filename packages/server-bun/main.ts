@@ -32,7 +32,7 @@ function getArg(name: string, defaultValue: string): string {
   return defaultValue;
 }
 
-const port = parseInt(getArg("port", "3456"), 10);
+const port = parseInt(getArg("port", "3451"), 10);
 const staticDir = getArg("static", "");
 const devURL = getArg("dev-url", "");
 const machineName = getArg("name", "") || hostnameOrDefault();

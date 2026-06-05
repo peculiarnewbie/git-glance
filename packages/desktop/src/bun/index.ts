@@ -4,7 +4,7 @@ import type { DesktopRPC } from "../shared/types"
 import { join } from "node:path"
 import { existsSync } from "node:fs"
 
-const PORT = 3456
+const PORT = 3451
 
 ApplicationMenu.setApplicationMenu([
   { submenu: [{ label: "Quit", role: "quit" }] },
