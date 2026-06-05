@@ -1,0 +1,13 @@
+{
+  "name": "@git-glance/server-bun",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "bun run main.ts",
+    "start": "bun run main.ts",
+    "build": "bun build main.ts --compile --minify --bytecode --target=bun --outfile dist/server-bun"
+  },
+  "devDependencies": {
+    "@types/bun": "latest"
+  }
+}
