@@ -38,9 +38,18 @@ impl GitService {
 
     async fn get_lock(&self, repo_path: &str) -> Arc<Mutex<()>> {
         let mut locks = self.locks.lock().await;
-        locks.entry(repo_path.to_string())
+        let lock = locks.entry(repo_path.to_string())
             .or_insert_with(|| Arc::new(Mutex::new(())))
-            .clone()
+            .clone();
+        if locks.len() > 5000 {
+            locks.retain(|_, v| Arc::strong_count(v) > 1);
+        }
+        lock
+    }
+
+    pub async fn cleanup_locks(&self) {
+        let mut locks = self.locks.lock().await;
+        locks.retain(|_, v| Arc::strong_count(v) > 1);
     }
 
     pub async fn exec_git(

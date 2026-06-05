@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -6,7 +7,7 @@ use tokio::sync::mpsc;
 
 use crate::cache::CacheService;
 use crate::git::GitService;
-use crate::types::{GitRepo, ScanProgress};
+use crate::types::{GitRepo, GitRepoSettings, ScanProgress};
 
 pub static SCAN_CANCELED: AtomicBool = AtomicBool::new(false);
 
@@ -130,14 +131,9 @@ async fn scan_one_repo(
     }
 }
 
-fn merge_settings(repo: &mut GitRepo, existing: &[GitRepo]) {
-    for e in existing {
-        if e.path == repo.path {
-            if let Some(ref s) = e.settings {
-                repo.settings = Some(s.clone());
-            }
-            break;
-        }
+fn merge_settings(repo: &mut GitRepo, settings_map: &HashMap<String, GitRepoSettings>) {
+    if let Some(s) = settings_map.get(&repo.path) {
+        repo.settings = Some(s.clone());
     }
 }
 
@@ -150,7 +146,6 @@ pub async fn scan_all(
 ) {
     let repo_paths = find_git_repos(&root_dir);
     let total = repo_paths.len();
-    let existing = cache.load().await;
 
     let _ = progress_tx
         .send(ScanProgress {
@@ -160,6 +155,15 @@ pub async fn scan_all(
             repo: None,
         })
         .await;
+
+    // Build a lightweight path→settings map from cache
+    // instead of cloning the full repo list into every concurrent task
+    let existing = cache.load().await;
+    let settings_map: HashMap<String, GitRepoSettings> = existing
+        .iter()
+        .filter_map(|r| r.settings.as_ref().map(|s| (r.path.clone(), s.clone())))
+        .collect();
+    drop(existing);
 
     // Scan concurrently (8 at a time)
     let sem = Arc::new(tokio::sync::Semaphore::new(8));
@@ -172,7 +176,7 @@ pub async fn scan_all(
         let path = path.clone();
         let machine = machine.clone();
         let sem = sem.clone();
-        let existing = existing.clone();
+        let settings_map = settings_map.clone();
 
         handles.push(tokio::spawn(async move {
             let _permit = sem.acquire().await.unwrap();
@@ -206,7 +210,7 @@ pub async fn scan_all(
                 error: Some("scan timed out".to_string()),
                 settings: None,
             });
-            merge_settings(&mut repo, &existing);
+            merge_settings(&mut repo, &settings_map);
             (i, repo)
         }));
     }
@@ -326,6 +330,8 @@ pub async fn scan_all(
             .await;
     }
 
+    git.cleanup_locks().await;
+
     let _ = progress_tx
         .send(ScanProgress {
             phase: "done".to_string(),
@@ -345,7 +351,6 @@ pub async fn scan_only(
 ) {
     let repo_paths = find_git_repos(&root_dir);
     let total = repo_paths.len();
-    let existing = cache.load().await;
 
     let _ = progress_tx
         .send(ScanProgress {
@@ -356,6 +361,13 @@ pub async fn scan_only(
         })
         .await;
 
+    let existing = cache.load().await;
+    let settings_map: HashMap<String, GitRepoSettings> = existing
+        .iter()
+        .filter_map(|r| r.settings.as_ref().map(|s| (r.path.clone(), s.clone())))
+        .collect();
+    drop(existing);
+
     let sem = Arc::new(tokio::sync::Semaphore::new(8));
     let mut handles = Vec::new();
     let mut results: Vec<Option<GitRepo>> = vec![None; total];
@@ -365,7 +377,7 @@ pub async fn scan_only(
         let path = path.clone();
         let machine = machine.clone();
         let sem = sem.clone();
-        let existing = existing.clone();
+        let settings_map = settings_map.clone();
 
         handles.push(tokio::spawn(async move {
             let _permit = sem.acquire().await.unwrap();
@@ -399,7 +411,7 @@ pub async fn scan_only(
                 error: Some("scan timed out".to_string()),
                 settings: None,
             });
-            merge_settings(&mut repo, &existing);
+            merge_settings(&mut repo, &settings_map);
             (i, repo)
         }));
     }
@@ -425,6 +437,8 @@ pub async fn scan_only(
     if !SCAN_CANCELED.load(Ordering::SeqCst) {
         cache.save(&scanned_results).await;
     }
+
+    git.cleanup_locks().await;
 
     let _ = progress_tx
         .send(ScanProgress {

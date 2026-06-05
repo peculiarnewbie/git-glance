@@ -6,7 +6,11 @@ mod scanner;
 mod types;
 mod ws;
 
+use mimalloc::MiMalloc;
 use std::net::SocketAddr;
+
+#[global_allocator]
+static GLOBAL: MiMalloc = MiMalloc;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
