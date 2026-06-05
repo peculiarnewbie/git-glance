@@ -1,6 +1,7 @@
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct GitRepoSettings {
     #[serde(default)]
     pub skip_untracked: bool,
@@ -17,6 +18,7 @@ pub struct FileStatus {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct GitRepo {
     pub name: String,
     pub path: String,
@@ -57,6 +59,7 @@ pub struct GitRepo {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct MachineStatus {
     pub name: String,
     #[serde(default)]
@@ -69,6 +72,7 @@ pub struct MachineStatus {
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[allow(dead_code)]
+#[serde(rename_all = "camelCase")]
 pub struct ServerConfig {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub root_dir: Option<String>,
@@ -83,6 +87,7 @@ fn default_model() -> String {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ServerConfigMachine {
     pub name: String,
     pub url: String,
@@ -91,6 +96,7 @@ pub struct ServerConfigMachine {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ReposResponse {
     pub repos: Vec<GitRepo>,
     pub scanned_at: i64,
@@ -119,6 +125,7 @@ pub struct RescanResult {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ScanProgress {
     pub phase: String,
     #[serde(default)]
@@ -130,6 +137,7 @@ pub struct ScanProgress {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct CommitProgress {
     pub phase: String,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -143,6 +151,7 @@ pub struct CommitProgress {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct FetchProgress {
     pub phase: String,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -164,6 +173,7 @@ pub struct FetchProgress {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
 pub struct PersistedConfig {
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub root_dir: String,

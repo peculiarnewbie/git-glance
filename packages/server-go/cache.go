@@ -4,7 +4,9 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
+	"unicode"
 )
 
 type CacheService struct {
@@ -29,10 +31,52 @@ func NewCacheService(cachePath, configPath string) *CacheService {
 	}
 }
 
+func snakeToCamel(s string) string {
+	var b strings.Builder
+	nextUpper := false
+	for _, r := range s {
+		if r == '_' {
+			nextUpper = true
+		} else if nextUpper {
+			b.WriteRune(unicode.ToUpper(r))
+			nextUpper = false
+		} else {
+			b.WriteRune(r)
+		}
+	}
+	return b.String()
+}
+
+func normalizeKeys(v any) any {
+	switch m := v.(type) {
+	case map[string]any:
+		out := make(map[string]any, len(m))
+		for k, val := range m {
+			out[snakeToCamel(k)] = normalizeKeys(val)
+		}
+		return out
+	case []any:
+		for i, val := range m {
+			m[i] = normalizeKeys(val)
+		}
+		return m
+	default:
+		return v
+	}
+}
+
 func (c *CacheService) Load() ([]GitRepo, error) {
 	raw, err := os.ReadFile(c.cachePath)
 	if err != nil {
 		return []GitRepo{}, nil
+	}
+	// Normalize snake_case keys from Rust server to camelCase expected by Go struct
+	var rawAny any
+	if err := json.Unmarshal(raw, &rawAny); err == nil {
+		rawAny = normalizeKeys(rawAny)
+		if normalized, err := json.Marshal(rawAny); err == nil {
+			raw = normalized
+		}
 	}
 	var repos []GitRepo
 	if err := json.Unmarshal(raw, &repos); err != nil {
