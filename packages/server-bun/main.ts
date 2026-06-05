@@ -4,6 +4,7 @@ import { homedir } from "os";
 import { CacheService } from "./cache";
 import { GitService } from "./git";
 import { PeerManager } from "./peer";
+import { embeddedAssets } from "./generated-assets";
 import {
   handleWSOpen,
   handleWSMessage,
@@ -151,7 +152,25 @@ const server = Bun.serve({
       return Response.redirect(redirect, 302);
     }
 
-    // Static file serving
+    // Static file serving — embedded assets first, then filesystem
+    {
+      let assetPath = path === "/" ? "index.html" : path.replace(/^\//, "");
+      const embedded = embeddedAssets[assetPath];
+      if (embedded) {
+        return new Response(embedded.content, {
+          headers: { "Content-Type": embedded.mimeType },
+        });
+      }
+
+      if (!embedded && !assetPath.includes(".")) {
+        const indexEmbedded = embeddedAssets["index.html"];
+        if (indexEmbedded) {
+          return new Response(indexEmbedded.content, {
+            headers: { "Content-Type": "text/html" },
+          });
+        }
+      }
+    }
     if (resolvedStaticDir) {
       let filePath = join(resolvedStaticDir, path);
 

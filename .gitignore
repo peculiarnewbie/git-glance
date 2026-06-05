@@ -27,3 +27,6 @@ packages/agent/agent.exe
 **/*.exe
 
 packages/server-go/server-go
+
+# Bun server build artifacts
+packages/server-bun/.embedded/
