@@ -12,11 +12,15 @@ const ext = isWin ? ".exe" : ""
 console.log("Building frontend (vite)...")
 execSync("pnpm --filter @git-glance/desktop build", { stdio: "inherit", cwd: root })
 
-console.log("Building Go server...")
+console.log("Building Rust server...")
 mkdirSync(join(root, "dist"), { recursive: true })
 execSync(
-  `go build -C packages/server-go -o ${join(root, "dist", `git-glance-serve${ext}`)} .`,
-  { stdio: "inherit", cwd: root },
+  "cargo build --release",
+  { stdio: "inherit", cwd: join(root, "packages", "server-rust") },
 )
+
+const rustBin = join(root, "packages", "server-rust", "target", "release", `git-glance-serve${ext}`)
+const destBin = join(root, "dist", `git-glance-serve${ext}`)
+execSync(`cp "${rustBin}" "${destBin}"`, { stdio: "inherit", cwd: root })
 
 console.log(`Done. Binary at dist/git-glance-serve${ext}`)

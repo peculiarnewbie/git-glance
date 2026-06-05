@@ -5,6 +5,7 @@
     "build": "node scripts/build.mjs",
     "start": "node scripts/start.mjs",
     "dev:ui": "pnpm --filter @git-glance/desktop dev",
+    "dev:server-rust": "cargo run --release --manifest-path packages/server-rust/Cargo.toml",
     "dev:server-go": "go run ./packages/server-go",
     "dev:server-bun": "bun run ./packages/server-bun/main.ts",
     "build:server-bun": "cd packages/server-bun && bun run build:compile",
