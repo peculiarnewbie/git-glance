@@ -167,47 +167,79 @@ fn resolve_binary_path() -> String {
         .unwrap_or_else(|_| format!("git-glance-serve"))
 }
 
-fn resolve_static_dir(cli_static: &Option<String>) -> String {
-    if let Some(d) = cli_static {
-        return std::fs::canonicalize(d)
-            .map(|p| p.to_string_lossy().to_string())
-            .unwrap_or_else(|_| d.clone());
+fn find_workspace_root() -> Option<PathBuf> {
+    let markers = ["pnpm-workspace.yaml", "pnpm-workspace.yml", "Cargo.toml"];
+    let starting_dirs: Vec<PathBuf> = std::env::current_dir()
+        .into_iter()
+        .chain(std::env::current_exe().ok().and_then(|p| p.parent().map(|p| p.to_path_buf())).into_iter())
+        .collect();
+
+    for start in starting_dirs {
+        let mut dir = start;
+        loop {
+            for marker in &markers {
+                let candidate = dir.join(marker);
+                if candidate.exists() {
+                    return Some(dir);
+                }
+            }
+            if !dir.pop() {
+                break;
+            }
+        }
     }
+    None
+}
+
+fn resolve_static_dir(cli_static: &Option<String>) -> Option<PathBuf> {
+    if let Some(d) = cli_static {
+        let path = PathBuf::from(d);
+        if path.join("index.html").exists() {
+            return Some(path);
+        }
+        return std::fs::canonicalize(d).ok().or(Some(path));
+    }
+
+    let mut candidates: Vec<PathBuf> = vec![
+        PathBuf::from("public"),
+        PathBuf::from("packages/desktop/renderer-dist"),
+        PathBuf::from("../desktop/renderer-dist"),
+        PathBuf::from("../../desktop/renderer-dist"),
+    ];
+
+    if let Some(ws) = find_workspace_root() {
+        candidates.push(ws.join("packages/desktop/renderer-dist"));
+    }
+
     let binary_dir = std::env::current_exe()
         .ok()
         .and_then(|p| p.parent().map(|p| p.to_path_buf()));
 
-    let candidates = vec![
-        PathBuf::from("public"),
-        PathBuf::from("../desktop/renderer-dist"),
-        PathBuf::from("../../desktop/renderer-dist"),
-        PathBuf::from("packages/desktop/renderer-dist"),
-    ];
-    if let Some(ref bin_dir) = binary_dir {
+    let search_roots: Vec<PathBuf> = std::env::current_dir()
+        .into_iter()
+        .chain(binary_dir.into_iter())
+        .collect();
+
+    for root in search_roots {
         for c in &candidates {
-            let abs = bin_dir.join(c);
+            let abs = if c.is_absolute() { c.clone() } else { root.join(c) };
             if abs.join("index.html").exists() {
-                return abs.to_string_lossy().to_string();
+                return Some(abs);
             }
         }
     }
-    for c in &candidates {
-        if let Ok(abs) = std::env::current_dir().map(|cwd| cwd.join(c)) {
-            if abs.join("index.html").exists() {
-                return abs.to_string_lossy().to_string();
-            }
-        }
-    }
-    eprintln!("warning: no static directory found, using 'public'");
-    "public".to_string()
+
+    None
 }
 
 fn install_service(args: &CliArgs) {
     let binary = resolve_binary_path();
-    let static_dir = resolve_static_dir(&args.static_dir);
+    let static_dir = resolve_static_dir(&args.static_dir)
+        .unwrap_or_else(|| PathBuf::from("public"));
     let unit_dir = systemd_user_dir();
     let unit_path = unit_dir.join(format!("{}.service", SERVICE_NAME));
-    let unit_content = generate_unit(args.port, &static_dir, &binary);
+    let static_dir_str = static_dir.to_string_lossy().to_string();
+    let unit_content = generate_unit(args.port, &static_dir_str, &binary);
 
     std::fs::create_dir_all(&unit_dir).expect("cannot create systemd user dir");
     std::fs::write(&unit_path, &unit_content).expect("cannot write unit file");
@@ -338,29 +370,12 @@ async fn main() {
         local_name: machine_name.clone(),
     });
 
-    let static_dir = if let Some(dir) = static_dir_arg {
-        Some(PathBuf::from(dir))
+    let static_dir = resolve_static_dir(&static_dir_arg);
+    if let Some(ref d) = static_dir {
+        println!("Serving static files from {}", d.display());
     } else {
-        let candidates = vec![
-            PathBuf::from("public"),
-            PathBuf::from("../desktop/renderer-dist"),
-        ];
-        let mut found = None;
-        for c in candidates {
-            if let Ok(abs) = std::env::current_dir().map(|cwd| cwd.join(&c)) {
-                if abs.join("index.html").exists() {
-                    found = Some(abs);
-                    break;
-                }
-            }
-        }
-        if let Some(ref d) = found {
-            println!("Serving static files from {}", d.display());
-        } else {
-            println!("No static directory found, running API-only mode");
-        }
-        found
-    };
+        println!("No static directory found, running API-only mode");
+    }
 
     let state = Arc::new(AppState {
         deps,
