@@ -95,11 +95,7 @@ fn now_millis() -> i64 {
         .as_millis() as i64
 }
 
-async fn scan_one_repo(
-    git: &GitService,
-    repo_path: &str,
-    machine: &str,
-) -> GitRepo {
+async fn scan_one_repo(git: &GitService, repo_path: &str, machine: &str) -> GitRepo {
     let name = Path::new(repo_path)
         .file_name()
         .unwrap_or_default()

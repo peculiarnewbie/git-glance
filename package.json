@@ -5,19 +5,7 @@
     "build": "node scripts/build.mjs",
     "start": "node scripts/start.mjs",
     "dev:ui": "pnpm --filter @git-glance/desktop dev",
-    "dev:server-rust": "cargo run --release --manifest-path packages/server-rust/Cargo.toml",
-    "dev:server-go": "go run ./packages/server-go",
-    "dev:server-bun": "bun run ./packages/server-bun/main.ts",
-    "build:server-bun": "cd packages/server-bun && bun run build:compile",
-    "dev:local": "concurrently -n agent,vite \"go run -C packages/agent . --local\" \"pnpm dev:ui\""
+    "dev:server-rust": "cargo run --release --manifest-path packages/server-rust/Cargo.toml"
   },
-  "devDependencies": {
-    "concurrently": "^9.2.1"
-  },
-  "packageManager": "pnpm@11.5.0",
-  "pnpm": {
-    "onlyBuiltDependencies": [
-      "esbuild"
-    ]
-  }
+  "packageManager": "pnpm@11.5.0"
 }

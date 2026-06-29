@@ -6,6 +6,10 @@ mod scanner;
 mod types;
 mod ws;
 
+#[cfg(windows)]
+mod windows_service;
+
+use std::io;
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -23,14 +27,17 @@ struct AppState {
     dev_url: Option<String>,
 }
 
-struct CliArgs {
-    port: u16,
-    static_dir: Option<String>,
-    dev_url: Option<String>,
-    machine_name: Option<String>,
-    token: Option<String>,
-    install_service: bool,
-    uninstall_service: bool,
+#[derive(Clone)]
+pub struct CliArgs {
+    pub port: u16,
+    pub static_dir: Option<String>,
+    pub dev_url: Option<String>,
+    pub machine_name: Option<String>,
+    pub token: Option<String>,
+    pub install_service: bool,
+    pub uninstall_service: bool,
+    pub install_startup: bool,
+    pub uninstall_startup: bool,
 }
 
 fn hostname_or_default() -> String {
@@ -39,7 +46,7 @@ fn hostname_or_default() -> String {
         .unwrap_or_else(|_| "local".to_string())
 }
 
-fn parse_args() -> CliArgs {
+pub fn parse_args() -> CliArgs {
     let args: Vec<String> = std::env::args().collect();
     let mut port = 3451u16;
     let mut static_dir = None;
@@ -48,31 +55,49 @@ fn parse_args() -> CliArgs {
     let mut token = None;
     let mut install_service = false;
     let mut uninstall_service = false;
+    let mut install_startup = false;
+    let mut uninstall_startup = false;
 
     let mut i = 1;
     while i < args.len() {
-        match args[i].as_str() {
+        let (flag, inline_value) = if let Some(idx) = args[i].find('=') {
+            let (k, v) = args[i].split_at(idx);
+            (k.to_string(), Some(v[1..].to_string()))
+        } else {
+            (args[i].clone(), None)
+        };
+        let value_from_next: Option<String> = if inline_value.is_none() {
+            args.get(i + 1).cloned()
+        } else {
+            None
+        };
+        let consumed_next = inline_value.is_none() && value_from_next.is_some();
+        match flag.as_str() {
             "--port" => {
-                i += 1;
-                if let Some(v) = args.get(i) {
+                let v = inline_value.or(value_from_next);
+                if let Some(v) = v {
                     port = v.parse().unwrap_or(3451);
                 }
             }
             "--static" => {
-                i += 1;
-                static_dir = args.get(i).cloned();
+                if let Some(v) = inline_value.or(value_from_next) {
+                    static_dir = Some(v);
+                }
             }
             "--dev-url" => {
-                i += 1;
-                dev_url = args.get(i).cloned();
+                if let Some(v) = inline_value.or(value_from_next) {
+                    dev_url = Some(v);
+                }
             }
             "--name" => {
-                i += 1;
-                machine_name = args.get(i).cloned();
+                if let Some(v) = inline_value.or(value_from_next) {
+                    machine_name = Some(v);
+                }
             }
             "--token" => {
-                i += 1;
-                token = args.get(i).cloned();
+                if let Some(v) = inline_value.or(value_from_next) {
+                    token = Some(v);
+                }
             }
             "--install-service" => {
                 install_service = true;
@@ -80,13 +105,26 @@ fn parse_args() -> CliArgs {
             "--uninstall-service" => {
                 uninstall_service = true;
             }
+            "--install-startup" => {
+                install_startup = true;
+            }
+            "--uninstall-startup" => {
+                uninstall_startup = true;
+            }
+            "--windows-service" => {
+                std::env::set_var("GIT_GLANCE_WINDOWS_SERVICE", "1");
+            }
             "--help" | "-h" => {
                 print_help();
                 std::process::exit(0);
             }
             _ => {}
         }
-        i += 1;
+        if consumed_next {
+            i += 2;
+        } else {
+            i += 1;
+        }
     }
 
     if let Ok(v) = std::env::var("PORT") {
@@ -112,6 +150,8 @@ fn parse_args() -> CliArgs {
         token,
         install_service,
         uninstall_service,
+        install_startup,
+        uninstall_startup,
     }
 }
 
@@ -125,8 +165,10 @@ fn print_help() {
     println!("  --dev-url <URL>            Vite dev server URL for proxy (env: DEV_URL)");
     println!("  --name <NAME>              Machine name (env: MACHINE_NAME, default: hostname)");
     println!("  --token <TOKEN>            Peer authentication token");
-    println!("  --install-service          Install as systemd user service (auto-start on login)");
-    println!("  --uninstall-service        Remove systemd user service");
+    println!("  --install-startup          Register for auto-start at logon (Windows Run key / Linux systemd user)");
+    println!("  --uninstall-startup        Remove the auto-start entry");
+    println!("  --install-service          Install as auto-starting service (systemd on Linux, Windows Service on Windows)");
+    println!("  --uninstall-service        Remove the service");
     println!("  -h, --help                 Show this help");
 }
 
@@ -171,7 +213,12 @@ fn find_workspace_root() -> Option<PathBuf> {
     let markers = ["pnpm-workspace.yaml", "pnpm-workspace.yml", "Cargo.toml"];
     let starting_dirs: Vec<PathBuf> = std::env::current_dir()
         .into_iter()
-        .chain(std::env::current_exe().ok().and_then(|p| p.parent().map(|p| p.to_path_buf())).into_iter())
+        .chain(
+            std::env::current_exe()
+                .ok()
+                .and_then(|p| p.parent().map(|p| p.to_path_buf()))
+                .into_iter(),
+        )
         .collect();
 
     for start in starting_dirs {
@@ -222,7 +269,11 @@ fn resolve_static_dir(cli_static: &Option<String>) -> Option<PathBuf> {
 
     for root in search_roots {
         for c in &candidates {
-            let abs = if c.is_absolute() { c.clone() } else { root.join(c) };
+            let abs = if c.is_absolute() {
+                c.clone()
+            } else {
+                root.join(c)
+            };
             if abs.join("index.html").exists() {
                 return Some(abs);
             }
@@ -233,9 +284,32 @@ fn resolve_static_dir(cli_static: &Option<String>) -> Option<PathBuf> {
 }
 
 fn install_service(args: &CliArgs) {
+    #[cfg(windows)]
+    {
+        windows_service::install(args);
+    }
+    #[cfg(not(windows))]
+    {
+        install_service_linux(args);
+    }
+}
+
+fn uninstall_service() {
+    #[cfg(windows)]
+    {
+        windows_service::uninstall();
+    }
+    #[cfg(not(windows))]
+    {
+        uninstall_service_linux();
+    }
+}
+
+#[cfg(not(windows))]
+fn install_service_linux(args: &CliArgs) {
     let binary = resolve_binary_path();
-    let static_dir = resolve_static_dir(&args.static_dir)
-        .unwrap_or_else(|| PathBuf::from("public"));
+    let static_dir =
+        resolve_static_dir(&args.static_dir).unwrap_or_else(|| PathBuf::from("public"));
     let unit_dir = systemd_user_dir();
     let unit_path = unit_dir.join(format!("{}.service", SERVICE_NAME));
     let static_dir_str = static_dir.to_string_lossy().to_string();
@@ -277,7 +351,8 @@ fn install_service(args: &CliArgs) {
     println!("  journalctl --user -u {SERVICE_NAME} -f");
 }
 
-fn uninstall_service() {
+#[cfg(not(windows))]
+fn uninstall_service_linux() {
     let unit_dir = systemd_user_dir();
     let unit_path = unit_dir.join(format!("{}.service", SERVICE_NAME));
 
@@ -303,9 +378,28 @@ fn uninstall_service() {
     println!("git-glance service uninstalled.");
 }
 
+#[cfg(windows)]
+mod startup;
+
 #[tokio::main]
 async fn main() {
     let args = parse_args();
+
+    if args.install_startup {
+        #[cfg(windows)]
+        startup::install(&args);
+        #[cfg(not(windows))]
+        {
+            let _ = &args;
+            eprintln!("--install-startup not yet implemented for this platform");
+        }
+        return;
+    }
+    if args.uninstall_startup {
+        #[cfg(windows)]
+        startup::uninstall();
+        return;
+    }
 
     if args.install_service {
         install_service(&args);
@@ -316,6 +410,33 @@ async fn main() {
         return;
     }
 
+    #[cfg(windows)]
+    {
+        if std::env::var("GIT_GLANCE_WINDOWS_SERVICE").is_ok() {
+            if let Err(e) = windows_service::run_service_dispatcher() {
+                eprintln!("service dispatcher failed: {e}");
+                std::process::exit(1);
+            }
+            return;
+        }
+    }
+
+    let port = args.port;
+    if let Err(err) = run_server(args).await {
+        eprintln!("{}", server_error_message(&err, port));
+        std::process::exit(1);
+    }
+}
+
+pub(crate) fn server_error_message(err: &io::Error, port: u16) -> String {
+    if err.kind() == io::ErrorKind::AddrInUse {
+        format!("port {port} is already in use; another git-glance server may already be running")
+    } else {
+        format!("server failed: {err}")
+    }
+}
+
+pub async fn run_server(args: CliArgs) -> io::Result<()> {
     let port = args.port;
     let static_dir_arg = args.static_dir.clone();
     let dev_url = args.dev_url.clone();
@@ -326,12 +447,8 @@ async fn main() {
     let token_arg = args.token.clone();
 
     let home_dir = dirs::home_dir().expect("cannot get home dir");
-    let config_dir = std::env::var("CONFIG_DIR").unwrap_or_else(|_| {
-        home_dir
-            .join(".git-glance")
-            .to_string_lossy()
-            .to_string()
-    });
+    let config_dir = std::env::var("CONFIG_DIR")
+        .unwrap_or_else(|_| home_dir.join(".git-glance").to_string_lossy().to_string());
 
     let cache_path = PathBuf::from(&config_dir).join("repo-cache.json");
     let config_path = PathBuf::from(&config_dir).join("config.json");
@@ -393,10 +510,14 @@ async fn main() {
     let addr = SocketAddr::from(([127, 0, 0, 1], port));
     println!("Starting server on http://git-glance.local:{}", port);
 
-    let listener = tokio::net::TcpListener::bind(addr).await.unwrap();
+    let listener = match tokio::net::TcpListener::bind(addr).await {
+        Ok(listener) => listener,
+        Err(err) if err.kind() == io::ErrorKind::AddrInUse => return Err(err),
+        Err(err) => return Err(err),
+    };
     axum::serve(listener, app.into_make_service())
         .await
-        .unwrap();
+        .map_err(io::Error::other)
 }
 
 async fn ws_upgrade_handler(
@@ -421,10 +542,7 @@ async fn health_handler() -> impl IntoResponse {
     axum::Json(serde_json::json!({"status": "ok"}))
 }
 
-async fn static_handler(
-    State(state): State<Arc<AppState>>,
-    req: Request<Body>,
-) -> Response<Body> {
+async fn static_handler(State(state): State<Arc<AppState>>, req: Request<Body>) -> Response<Body> {
     let path = req.uri().path();
 
     if path == "/ws" {
@@ -495,11 +613,7 @@ async fn serve_index(static_dir: &Path) -> Response<Body> {
 }
 
 fn mime_from_path(path: &Path) -> &str {
-    match path
-        .extension()
-        .and_then(|e| e.to_str())
-        .unwrap_or("")
-    {
+    match path.extension().and_then(|e| e.to_str()).unwrap_or("") {
         "html" => "text/html; charset=utf-8",
         "js" | "mjs" => "application/javascript; charset=utf-8",
         "css" => "text/css; charset=utf-8",

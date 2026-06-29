@@ -1,10 +1,10 @@
+use axum::extract::ws::{Message as AxumMessage, WebSocket};
+use futures::{SinkExt, StreamExt};
+use serde_json::json;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::sync::mpsc;
-use axum::extract::ws::{Message as AxumMessage, WebSocket};
-use futures::{SinkExt, StreamExt};
-use serde_json::json;
 
 use crate::cache::CacheService;
 use crate::git::GitService;
@@ -232,7 +232,11 @@ async fn handle_pull(req: &WSRequest, deps: &ServerDeps, tx: &mpsc::Sender<Strin
     let machine = params.get("machine").and_then(|v| v.as_str()).unwrap_or("");
 
     if repo.is_empty() {
-        send_response(tx, WSResponse::error(&req.id, r#"Missing "repo" parameter"#)).await;
+        send_response(
+            tx,
+            WSResponse::error(&req.id, r#"Missing "repo" parameter"#),
+        )
+        .await;
         return;
     }
 
@@ -265,7 +269,11 @@ async fn handle_pull(req: &WSRequest, deps: &ServerDeps, tx: &mpsc::Sender<Strin
                 tx,
                 WSResponse::result(
                     &req.id,
-                    json!(PullPushResult { ok: true, output: Some(output), error: None }),
+                    json!(PullPushResult {
+                        ok: true,
+                        output: Some(output),
+                        error: None
+                    }),
                 ),
             )
             .await;
@@ -275,7 +283,11 @@ async fn handle_pull(req: &WSRequest, deps: &ServerDeps, tx: &mpsc::Sender<Strin
                 tx,
                 WSResponse::result(
                     &req.id,
-                    json!(PullPushResult { ok: false, output: None, error: Some(e.to_string()) }),
+                    json!(PullPushResult {
+                        ok: false,
+                        output: None,
+                        error: Some(e.to_string())
+                    }),
                 ),
             )
             .await;
@@ -289,7 +301,11 @@ async fn handle_push(req: &WSRequest, deps: &ServerDeps, tx: &mpsc::Sender<Strin
     let machine = params.get("machine").and_then(|v| v.as_str()).unwrap_or("");
 
     if repo.is_empty() {
-        send_response(tx, WSResponse::error(&req.id, r#"Missing "repo" parameter"#)).await;
+        send_response(
+            tx,
+            WSResponse::error(&req.id, r#"Missing "repo" parameter"#),
+        )
+        .await;
         return;
     }
 
@@ -322,7 +338,11 @@ async fn handle_push(req: &WSRequest, deps: &ServerDeps, tx: &mpsc::Sender<Strin
                 tx,
                 WSResponse::result(
                     &req.id,
-                    json!(PullPushResult { ok: true, output: Some(output), error: None }),
+                    json!(PullPushResult {
+                        ok: true,
+                        output: Some(output),
+                        error: None
+                    }),
                 ),
             )
             .await;
@@ -332,7 +352,11 @@ async fn handle_push(req: &WSRequest, deps: &ServerDeps, tx: &mpsc::Sender<Strin
                 tx,
                 WSResponse::result(
                     &req.id,
-                    json!(PullPushResult { ok: false, output: None, error: Some(e.to_string()) }),
+                    json!(PullPushResult {
+                        ok: false,
+                        output: None,
+                        error: Some(e.to_string())
+                    }),
                 ),
             )
             .await;
@@ -345,7 +369,11 @@ async fn handle_rescan_repo(req: &WSRequest, deps: &ServerDeps, tx: &mpsc::Sende
     let repo = params.get("repo").and_then(|v| v.as_str()).unwrap_or("");
 
     if repo.is_empty() {
-        send_response(tx, WSResponse::error(&req.id, r#"Missing "repo" parameter"#)).await;
+        send_response(
+            tx,
+            WSResponse::error(&req.id, r#"Missing "repo" parameter"#),
+        )
+        .await;
         return;
     }
 
@@ -355,7 +383,11 @@ async fn handle_rescan_repo(req: &WSRequest, deps: &ServerDeps, tx: &mpsc::Sende
                 tx,
                 WSResponse::result(
                     &req.id,
-                    json!(RescanResult { ok: true, repo: Some(updated), error: None }),
+                    json!(RescanResult {
+                        ok: true,
+                        repo: Some(updated),
+                        error: None
+                    }),
                 ),
             )
             .await;
@@ -365,7 +397,11 @@ async fn handle_rescan_repo(req: &WSRequest, deps: &ServerDeps, tx: &mpsc::Sende
                 tx,
                 WSResponse::result(
                     &req.id,
-                    json!(RescanResult { ok: false, repo: None, error: Some("Failed to rescan repo".to_string()) }),
+                    json!(RescanResult {
+                        ok: false,
+                        repo: None,
+                        error: Some("Failed to rescan repo".to_string())
+                    }),
                 ),
             )
             .await;
@@ -378,7 +414,11 @@ async fn handle_check_pull(req: &WSRequest, deps: &ServerDeps, tx: &mpsc::Sender
     let repo = params.get("repo").and_then(|v| v.as_str()).unwrap_or("");
 
     if repo.is_empty() {
-        send_response(tx, WSResponse::error(&req.id, r#"Missing "repo" parameter"#)).await;
+        send_response(
+            tx,
+            WSResponse::error(&req.id, r#"Missing "repo" parameter"#),
+        )
+        .await;
         return;
     }
 
@@ -393,7 +433,11 @@ async fn handle_check_pull(req: &WSRequest, deps: &ServerDeps, tx: &mpsc::Sender
                 tx,
                 WSResponse::result(
                     &req.id,
-                    json!(RescanResult { ok: true, repo: Some(updated), error: None }),
+                    json!(RescanResult {
+                        ok: true,
+                        repo: Some(updated),
+                        error: None
+                    }),
                 ),
             )
             .await;
@@ -403,7 +447,11 @@ async fn handle_check_pull(req: &WSRequest, deps: &ServerDeps, tx: &mpsc::Sender
                 tx,
                 WSResponse::result(
                     &req.id,
-                    json!(RescanResult { ok: false, repo: None, error: Some("Failed to rescan repo after fetch".to_string()) }),
+                    json!(RescanResult {
+                        ok: false,
+                        repo: None,
+                        error: Some("Failed to rescan repo after fetch".to_string())
+                    }),
                 ),
             )
             .await;
@@ -411,12 +459,20 @@ async fn handle_check_pull(req: &WSRequest, deps: &ServerDeps, tx: &mpsc::Sender
     }
 }
 
-async fn handle_update_repo_settings(req: &WSRequest, deps: &ServerDeps, tx: &mpsc::Sender<String>) {
+async fn handle_update_repo_settings(
+    req: &WSRequest,
+    deps: &ServerDeps,
+    tx: &mpsc::Sender<String>,
+) {
     let params = &req.params;
     let repo = params.get("repo").and_then(|v| v.as_str()).unwrap_or("");
 
     if repo.is_empty() {
-        send_response(tx, WSResponse::error(&req.id, r#"Missing "repo" parameter"#)).await;
+        send_response(
+            tx,
+            WSResponse::error(&req.id, r#"Missing "repo" parameter"#),
+        )
+        .await;
         return;
     }
 
@@ -452,7 +508,11 @@ async fn handle_scan(req: &WSRequest, deps: &ServerDeps, tx: &mpsc::Sender<Strin
     let root_dir = params.get("rootDir").and_then(|v| v.as_str()).unwrap_or("");
 
     if root_dir.is_empty() {
-        send_response(tx, WSResponse::error(&req.id, r#"Missing "rootDir" parameter"#)).await;
+        send_response(
+            tx,
+            WSResponse::error(&req.id, r#"Missing "rootDir" parameter"#),
+        )
+        .await;
         return;
     }
 
@@ -471,7 +531,11 @@ async fn handle_scan(req: &WSRequest, deps: &ServerDeps, tx: &mpsc::Sender<Strin
 
     while let Some(p) = progress_rx.recv().await {
         let resp = WSResponse::progress(&req.id, serde_json::to_value(&p).unwrap());
-        if tx.send(serde_json::to_string(&resp).unwrap()).await.is_err() {
+        if tx
+            .send(serde_json::to_string(&resp).unwrap())
+            .await
+            .is_err()
+        {
             scanner::cancel_scan();
             return;
         }
@@ -485,7 +549,11 @@ async fn handle_scan_only(req: &WSRequest, deps: &ServerDeps, tx: &mpsc::Sender<
     let root_dir = params.get("rootDir").and_then(|v| v.as_str()).unwrap_or("");
 
     if root_dir.is_empty() {
-        send_response(tx, WSResponse::error(&req.id, r#"Missing "rootDir" parameter"#)).await;
+        send_response(
+            tx,
+            WSResponse::error(&req.id, r#"Missing "rootDir" parameter"#),
+        )
+        .await;
         return;
     }
 
@@ -504,7 +572,11 @@ async fn handle_scan_only(req: &WSRequest, deps: &ServerDeps, tx: &mpsc::Sender<
 
     while let Some(p) = progress_rx.recv().await {
         let resp = WSResponse::progress(&req.id, serde_json::to_value(&p).unwrap());
-        if tx.send(serde_json::to_string(&resp).unwrap()).await.is_err() {
+        if tx
+            .send(serde_json::to_string(&resp).unwrap())
+            .await
+            .is_err()
+        {
             scanner::cancel_scan();
             return;
         }
@@ -518,7 +590,11 @@ async fn handle_commit_push(req: &WSRequest, deps: &ServerDeps, tx: &mpsc::Sende
     let repo = params.get("repo").and_then(|v| v.as_str()).unwrap_or("");
 
     if repo.is_empty() {
-        send_response(tx, WSResponse::error(&req.id, r#"Missing "repo" parameter"#)).await;
+        send_response(
+            tx,
+            WSResponse::error(&req.id, r#"Missing "repo" parameter"#),
+        )
+        .await;
         return;
     }
 

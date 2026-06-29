@@ -8,6 +8,7 @@ type RepoPathType = import("./api").RepoPath;
 type RepoBranchType = import("./api").RepoBranch;
 type RepoRemoteType = import("./api").RepoRemote;
 type RepoErrorType = import("./api").RepoError;
+type CommitErrorType = import("./api").CommitEvent['error'];
 
 type SortKey = "last-commit" | "week-activity" | "name" | "pull-count";
 
@@ -100,15 +101,19 @@ function PushButton(props: { repoPath: RepoPathType; repoName: RepoNameType; ahe
   );
 }
 
-function CommitButton(props: { repoPath: RepoPathType; commitBusy: () => string | null; commitPhase: () => string; commitError: () => CommitErrorType | null; onCommit: () => void; onCancel: () => void; }) {
+function CommitButton(props: { repoPath: RepoPathType; commitBusy: () => string | null; commitPhase: () => string; commitError: () => { repoPath: string; error: NonNullable<CommitErrorType> } | null; onCommit: () => void; onCancel: () => void; onDismissError: () => void; }) {
   const isBusy = () => props.commitBusy() === props.repoPath;
+  const error = () => {
+    const err = props.commitError();
+    return err?.repoPath === props.repoPath ? err.error : null;
+  };
   const phaseLabel = () => {
     const labels: Record<string, string> = { staging: "Staging...", generating: "Generating message...", committing: "Committing...", pushing: "Pushing..." };
     return labels[props.commitPhase()] || "";
   };
   return (
     <div class="flex-1">
-      <Show when={!isBusy() && !props.commitError()}>
+      <Show when={!isBusy() && !error()}>
         <button onClick={() => props.onCommit()} class="flex items-center gap-1 px-2 py-1 bg-sky-500/10 hover:bg-sky-500/20 border border-sky-500/20 rounded text-[11px] text-sky-400/80 transition-colors">
           ⇡ Commit & Push
         </button>
@@ -122,10 +127,14 @@ function CommitButton(props: { repoPath: RepoPathType; commitBusy: () => string 
           <button onClick={() => props.onCancel()} class="text-[10px] text-zinc-600 hover:text-zinc-400 transition-colors">cancel</button>
         </div>
       </Show>
-      <Show when={!isBusy() && !!props.commitError()}>
-        <div class="flex items-center gap-2">
-          <span class="text-[10px] text-red-400/80 truncate max-w-[200px]">{props.commitError()}</span>
-          <button onClick={() => props.onCommit()} class="text-[10px] text-sky-400/80 hover:text-sky-300 transition-colors shrink-0">retry</button>
+      <Show when={!isBusy() && !!error()}>
+        <div class="rounded border border-red-500/20 bg-red-500/5 p-2 space-y-1">
+          <div class="flex items-center gap-2">
+            <span class="text-[10px] uppercase tracking-[0.18em] text-red-400/70 shrink-0">commit failed</span>
+            <button onClick={() => props.onCommit()} class="text-[10px] text-sky-400/80 hover:text-sky-300 transition-colors shrink-0">retry</button>
+            <button onClick={() => props.onDismissError()} class="text-[10px] text-zinc-500 hover:text-zinc-300 transition-colors shrink-0">dismiss</button>
+          </div>
+          <pre class="text-[10px] leading-relaxed text-red-200/80 whitespace-pre-wrap break-words max-h-28 overflow-auto">{error()}</pre>
         </div>
       </Show>
     </div>
@@ -142,16 +151,13 @@ export default function App() {
   const [grouped, setGrouped] = createSignal(true);
   const [collapsed, setCollapsed] = createSignal<Set<string>>(new Set(["Hidden"]));
 
-  // Derive types from schema of truth
-  type CommitPhaseType = import("./api").CommitEvent['phase'];
-  type CommitErrorType = import("./api").CommitEvent['error'];
   const [loading, setLoading] = createSignal(true);
   const [config, setConfig] = createSignal<{ opencodeModel: string; token?: string; machines?: { name: string; url: string; token?: string }[] }>({ opencodeModel: "CrofAI/deepseek-v4-flash" });
   const [showSettings, setShowSettings] = createSignal(false);
   const [modelDraft, setModelDraft] = createSignal("");
   const [commitBusy, setCommitBusy] = createSignal<string | null>(null);
   const [commitPhase, setCommitPhase] = createSignal<string>("");
-  const [commitError, setCommitError] = createSignal<string | null>(null);
+  const [commitError, setCommitError] = createSignal<{ repoPath: string; error: string } | null>(null);
   const [scanError, setScanError] = createSignal<string | null>(null);
   const [fetching, setFetching] = createSignal(false);
   const [fetchProgress, setFetchProgress] = createSignal<{ current: number; total: number }>({ current: 0, total: 0 });
@@ -286,6 +292,7 @@ export default function App() {
     if (result) {
       setDir(result);
       setRepos([]);
+      setCommitError(null);
       await api.setConfig({ rootDir: result });
     }
   }
@@ -299,6 +306,7 @@ export default function App() {
     setShowDirModal(false);
     setDir(path);
     setRepos([]);
+    setCommitError(null);
     await api.setConfig({ rootDir: path });
   }
 
@@ -460,7 +468,7 @@ export default function App() {
     commitController?.abort();
     commitController = api.subscribeCommitPush(repoPath, (data) => {
       if (data.phase === "error") {
-        setCommitError(data.error || "Unknown error");
+        setCommitError({ repoPath, error: data.error || "Unknown error" });
         setCommitBusy(null);
         setCommitPhase("");
       } else if (data.phase === "done") {
@@ -489,6 +497,10 @@ export default function App() {
     commitController?.abort();
     setCommitBusy(null);
     setCommitPhase("");
+  }
+
+  function handleDismissCommitError(repoPath: string) {
+    setCommitError(prev => prev?.repoPath === repoPath ? null : prev);
   }
 
   const [repoActionBusy, setRepoActionBusy] = createSignal<Set<string>>(new Set());
@@ -967,7 +979,7 @@ export default function App() {
               <PushButton repoPath={repo().path} repoName={repo().name} ahead={repo().status.ahead} machine={repo().machine !== "local" ? repo().machine : undefined} onRefresh={handleRefreshRepo} />
             </Show>
             <Show when={repo().status.staged > 0 || repo().status.unstaged > 0 || repo().status.untracked > 0}>
-              <CommitButton repoPath={repo().path} commitBusy={commitBusy} commitPhase={commitPhase} commitError={commitError} onCommit={() => handleStartCommit(repo().path)} onCancel={handleCancelCommit} />
+              <CommitButton repoPath={repo().path} commitBusy={commitBusy} commitPhase={commitPhase} commitError={commitError} onCommit={() => handleStartCommit(repo().path)} onCancel={handleCancelCommit} onDismissError={() => handleDismissCommitError(repo().path)} />
             </Show>
           </div>
 

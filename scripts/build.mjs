@@ -2,7 +2,7 @@ import { execSync } from "node:child_process"
 import { platform } from "node:os"
 import { join } from "node:path"
 import { fileURLToPath } from "node:url"
-import { mkdirSync } from "node:fs"
+import { copyFileSync, mkdirSync } from "node:fs"
 
 const __dirname = fileURLToPath(new URL(".", import.meta.url))
 const root = join(__dirname, "..")
@@ -21,6 +21,6 @@ execSync(
 
 const rustBin = join(root, "packages", "server-rust", "target", "release", `git-glance-serve${ext}`)
 const destBin = join(root, "dist", `git-glance-serve${ext}`)
-execSync(`cp "${rustBin}" "${destBin}"`, { stdio: "inherit", cwd: root })
+copyFileSync(rustBin, destBin)
 
 console.log(`Done. Binary at dist/git-glance-serve${ext}`)

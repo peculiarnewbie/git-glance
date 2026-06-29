@@ -1,6 +1,5 @@
 use std::process::Stdio;
 use tokio::process::Command;
-use tokio::io::AsyncWriteExt;
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct CommitMessage {
@@ -43,6 +42,30 @@ Staged patch:
     )
 }
 
+fn format_output(label: &str, bytes: &[u8]) -> Option<String> {
+    let value = String::from_utf8_lossy(bytes).trim().to_string();
+    if value.is_empty() {
+        None
+    } else {
+        Some(format!("{label}: {value}"))
+    }
+}
+
+fn opencode_failure(status: std::process::ExitStatus, stdout: &[u8], stderr: &[u8]) -> String {
+    let mut parts = vec![format!("opencode failed: {status}")];
+    if let Some(value) = format_output("stderr", stderr) {
+        parts.push(value);
+    }
+    if let Some(value) = format_output("stdout", stdout) {
+        parts.push(value);
+    }
+    if parts.len() == 1 {
+        parts.push("no stdout or stderr captured".to_string());
+    }
+    parts.push("Check `opencode providers` on this machine to confirm the model provider is connected.".to_string());
+    parts.join("\n")
+}
+
 pub async fn generate_commit_message(
     repo_path: &str,
     branch: &str,
@@ -52,23 +75,14 @@ pub async fn generate_commit_message(
 ) -> Result<CommitMessage, String> {
     let prompt = build_prompt(branch, staged_summary, staged_patch);
 
-    let args = vec![
-        "run", "--format", "json", "-m", model, "--dir", repo_path,
-    ];
-
-    let mut child = Command::new("opencode")
-        .args(&args)
+    let child = Command::new("opencode")
+        .args(["run", "--format", "json", "-m", model, "--dir", repo_path])
+        .arg(&prompt)
         .current_dir(repo_path)
-        .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
         .map_err(|e| format!("failed to run opencode: {}", e))?;
-
-    if let Some(mut stdin) = child.stdin.take() {
-        let _ = stdin.write_all(prompt.as_bytes()).await;
-        drop(stdin);
-    }
 
     let output = child
         .wait_with_output()
@@ -76,10 +90,10 @@ pub async fn generate_commit_message(
         .map_err(|e| format!("opencode wait failed: {}", e))?;
 
     if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
-        return Err(format!(
-            "opencode failed: {}\nstderr: {}",
-            output.status, stderr
+        return Err(opencode_failure(
+            output.status,
+            &output.stdout,
+            &output.stderr,
         ));
     }
 

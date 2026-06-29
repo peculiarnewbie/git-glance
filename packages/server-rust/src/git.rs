@@ -38,7 +38,8 @@ impl GitService {
 
     async fn get_lock(&self, repo_path: &str) -> Arc<Mutex<()>> {
         let mut locks = self.locks.lock().await;
-        let lock = locks.entry(repo_path.to_string())
+        let lock = locks
+            .entry(repo_path.to_string())
             .or_insert_with(|| Arc::new(Mutex::new(())))
             .clone();
         if locks.len() > 5000 {
@@ -215,17 +216,11 @@ impl GitService {
         let trimmed = String::from_utf8_lossy(&output.stdout).trim().to_string();
 
         if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr)
-                .trim()
-                .to_string();
+            let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
             return Err(GitCommandError {
                 command: format!("git {}", args.join(" ")),
                 repo_path: repo_path.to_string(),
-                cause: if stderr.is_empty() {
-                    trimmed
-                } else {
-                    stderr
-                },
+                cause: if stderr.is_empty() { trimmed } else { stderr },
             });
         }
 
@@ -276,9 +271,7 @@ impl GitService {
             Ok(Ok(output)) => {
                 let trimmed = String::from_utf8_lossy(&output.stdout).trim().to_string();
                 if !output.status.success() {
-                    let stderr = String::from_utf8_lossy(&output.stderr)
-                        .trim()
-                        .to_string();
+                    let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
                     return Err(GitCommandError {
                         command: format!("git {}", args.join(" ")),
                         repo_path: repo_path.to_string(),

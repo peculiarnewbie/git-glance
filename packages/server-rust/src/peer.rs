@@ -1,11 +1,11 @@
+use axum::extract::ws::{Message as AxumMessage, WebSocket as AxumWebSocket};
+use futures::{SinkExt, StreamExt};
+use serde_json::json;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::sync::{Mutex, RwLock};
 use tokio_tungstenite::tungstenite::Message as TungMessage;
-use futures::{SinkExt, StreamExt};
-use axum::extract::ws::{Message as AxumMessage, WebSocket as AxumWebSocket};
-use serde_json::json;
 
 use crate::cache::CacheService;
 use crate::git::GitService;
@@ -28,10 +28,14 @@ fn now_nanos() -> u128 {
 // ─── PeerConnection: a single WebSocket link to a remote machine ─────
 
 struct PeerConnectionInner {
-    writer: Option<futures::stream::SplitSink<
-        tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>,
-        TungMessage,
-    >>,
+    writer: Option<
+        futures::stream::SplitSink<
+            tokio_tungstenite::WebSocketStream<
+                tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
+            >,
+            TungMessage,
+        >,
+    >,
     pending: HashMap<String, tokio::sync::oneshot::Sender<PeerEnvelope>>,
 }
 
@@ -44,12 +48,7 @@ pub struct PeerConnection {
 }
 
 impl PeerConnection {
-    fn new(
-        name: String,
-        url: String,
-        token: String,
-        manager_ref: Arc<PeerManager>,
-    ) -> Arc<Self> {
+    fn new(name: String, url: String, token: String, manager_ref: Arc<PeerManager>) -> Arc<Self> {
         Arc::new(Self {
             inner: Arc::new(Mutex::new(PeerConnectionInner {
                 writer: None,
@@ -101,13 +100,8 @@ impl PeerConnection {
                 match read.next().await {
                     Some(Ok(TungMessage::Text(data))) => {
                         if let Ok(env) = serde_json::from_str::<PeerEnvelope>(&data) {
-                            handle_outgoing_envelope(
-                                &read_inner,
-                                &manager_ref,
-                                &this.name,
-                                env,
-                            )
-                            .await;
+                            handle_outgoing_envelope(&read_inner, &manager_ref, &this.name, env)
+                                .await;
                         }
                     }
                     Some(Ok(TungMessage::Close(_))) | Some(Err(_)) | None => break,
@@ -191,7 +185,11 @@ async fn handle_outgoing_envelope(
                 envelope_type: "auth".to_string(),
                 id: env.id,
                 ok,
-                error: if ok { String::new() } else { "invalid token".to_string() },
+                error: if ok {
+                    String::new()
+                } else {
+                    "invalid token".to_string()
+                },
                 ..Default::default()
             };
             let mut inner = inner.lock().await;
@@ -255,11 +253,20 @@ async fn handle_outgoing_request(
         "pull" => {
             if let Some(payload) = &env.payload {
                 if let Ok(pp) = serde_json::from_value::<PeerPullPushPayload>(payload.clone()) {
-                    match manager.git.run_with_lock("pull", &pp.path, Duration::from_secs(30)).await {
+                    match manager
+                        .git
+                        .run_with_lock("pull", &pp.path, Duration::from_secs(30))
+                        .await
+                    {
                         Ok(output) => {
                             resp.ok = true;
                             resp.payload = Some(
-                                serde_json::to_value(PullPushResult { ok: true, output: Some(output), error: None }).unwrap(),
+                                serde_json::to_value(PullPushResult {
+                                    ok: true,
+                                    output: Some(output),
+                                    error: None,
+                                })
+                                .unwrap(),
                             );
                         }
                         Err(e) => resp.error = e.to_string(),
@@ -270,11 +277,20 @@ async fn handle_outgoing_request(
         "push" => {
             if let Some(payload) = &env.payload {
                 if let Ok(pp) = serde_json::from_value::<PeerPullPushPayload>(payload.clone()) {
-                    match manager.git.run_with_lock("push", &pp.path, Duration::from_secs(60)).await {
+                    match manager
+                        .git
+                        .run_with_lock("push", &pp.path, Duration::from_secs(60))
+                        .await
+                    {
                         Ok(output) => {
                             resp.ok = true;
                             resp.payload = Some(
-                                serde_json::to_value(PullPushResult { ok: true, output: Some(output), error: None }).unwrap(),
+                                serde_json::to_value(PullPushResult {
+                                    ok: true,
+                                    output: Some(output),
+                                    error: None,
+                                })
+                                .unwrap(),
                             );
                         }
                         Err(e) => resp.error = e.to_string(),
@@ -324,8 +340,11 @@ impl PeerManager {
     }
 
     pub async fn update_config(self: &Arc<Self>, config: &PersistedConfig) {
-        let by_name: HashMap<&str, &ServerConfigMachine> =
-            config.machines.iter().map(|m| (m.name.as_str(), m)).collect();
+        let by_name: HashMap<&str, &ServerConfigMachine> = config
+            .machines
+            .iter()
+            .map(|m| (m.name.as_str(), m))
+            .collect();
 
         // Disconnect removed peers
         {
@@ -522,14 +541,8 @@ impl PeerManager {
                             r
                         })
                         .collect();
-                    self.cache
-                        .set_remote_repos(machine, tagged.clone())
-                        .await;
-                    println!(
-                        "[peer] received {} repos from {}",
-                        tagged.len(),
-                        machine
-                    );
+                    self.cache.set_remote_repos(machine, tagged.clone()).await;
+                    println!("[peer] received {} repos from {}", tagged.len(), machine);
                 }
             }
         }
@@ -550,10 +563,12 @@ impl PeerManager {
         let env = peer
             .request(
                 "pull",
-                Some(serde_json::to_value(PeerPullPushPayload {
-                    path: repo_path.to_string(),
-                })
-                .unwrap()),
+                Some(
+                    serde_json::to_value(PeerPullPushPayload {
+                        path: repo_path.to_string(),
+                    })
+                    .unwrap(),
+                ),
             )
             .await?;
 
@@ -581,10 +596,12 @@ impl PeerManager {
         let env = peer
             .request(
                 "push",
-                Some(serde_json::to_value(PeerPullPushPayload {
-                    path: repo_path.to_string(),
-                })
-                .unwrap()),
+                Some(
+                    serde_json::to_value(PeerPullPushPayload {
+                        path: repo_path.to_string(),
+                    })
+                    .unwrap(),
+                ),
             )
             .await?;
 
@@ -693,7 +710,10 @@ pub async fn handle_peer_ws(socket: AxumWebSocket, manager: Arc<PeerManager>) {
                     .into(),
                 ))
                 .await;
-            println!("[peer] authenticated incoming connection from {}", _peer_name);
+            println!(
+                "[peer] authenticated incoming connection from {}",
+                _peer_name
+            );
             continue;
         }
 
@@ -737,7 +757,12 @@ pub async fn handle_peer_ws(socket: AxumWebSocket, manager: Arc<PeerManager>) {
                                 Ok(output) => {
                                     resp.ok = true;
                                     resp.payload = Some(
-                                        serde_json::to_value(PullPushResult { ok: true, output: Some(output), error: None }).unwrap(),
+                                        serde_json::to_value(PullPushResult {
+                                            ok: true,
+                                            output: Some(output),
+                                            error: None,
+                                        })
+                                        .unwrap(),
                                     );
                                 }
                                 Err(e) => resp.error = e.to_string(),
@@ -756,7 +781,12 @@ pub async fn handle_peer_ws(socket: AxumWebSocket, manager: Arc<PeerManager>) {
                                 Ok(output) => {
                                     resp.ok = true;
                                     resp.payload = Some(
-                                        serde_json::to_value(PullPushResult { ok: true, output: Some(output), error: None }).unwrap(),
+                                        serde_json::to_value(PullPushResult {
+                                            ok: true,
+                                            output: Some(output),
+                                            error: None,
+                                        })
+                                        .unwrap(),
                                     );
                                 }
                                 Err(e) => resp.error = e.to_string(),

@@ -17,6 +17,20 @@ hex = "0.4"
 hostname = "0.4"
 url = "2"
 
+[target.'cfg(windows)'.dependencies]
+windows-service = "0.8"
+winreg = "0.52"
+
+[target.'cfg(windows)'.dependencies.windows]
+version = "0.62"
+features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_System_Console",
+    "Win32_System_Services",
+    "Win32_System_Threading",
+]
+
 [profile.release]
 strip = true
 lto = true
