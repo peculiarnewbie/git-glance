@@ -153,7 +153,7 @@ export interface RepoData {
   ahead: number; behind: number; remote: string | null
   lastCommitTime: number | null; weekCommits: number; lastScanTime: number | null
   error: string | null; machine: string
-  settings: { skipUntracked: boolean; skipPullCheck: boolean; hidden: boolean } | null
+  settings: { skipUntracked: boolean; skipPullCheck: boolean; hidden: boolean; pinned: boolean } | null
 }
 
 // Derive RepoInfo from the schema of truth (WebSocket response)
@@ -188,6 +188,7 @@ export interface RepoInfo {
   skipUntracked?: boolean;
   skipPullCheck?: boolean;
   hidden?: boolean;
+  pinned?: boolean;
 }
 
 export interface ReposResponse {
@@ -229,7 +230,7 @@ export const api = {
   pushRepo: (repo: RepoPath, machine?: string): Promise<{ ok: boolean; output?: string; error?: string }> =>
     send("push", { repo, machine }),
 
-  updateRepoSettings: (repo: RepoPath, settings: { skipUntracked?: boolean; skipPullCheck?: boolean; hidden?: boolean }): Promise<void> =>
+  updateRepoSettings: (repo: RepoPath, settings: { skipUntracked?: boolean; skipPullCheck?: boolean; hidden?: boolean; pinned?: boolean }): Promise<void> =>
     send("updateRepoSettings", { repo, ...settings }),
 
   cancelScan: (): Promise<void> => send("cancel").then(() => {}),
@@ -330,6 +331,7 @@ export function repoDataToInfo(r: RepoData): RepoInfo {
     skipUntracked: r.settings?.skipUntracked ?? false,
     skipPullCheck: r.settings?.skipPullCheck ?? false,
     hidden: r.settings?.hidden ?? false,
+    pinned: r.settings?.pinned ?? false,
     status: {
       branch: r.branch || "", remote: r.remote || null,
       hasChanges: r.hasChanges, staged: r.staged, stagedFiles: r.stagedFiles || [],
@@ -354,5 +356,5 @@ interface GitStatus {
 export interface RepoInfo {
   path: string; name: string; machine: string; cached: boolean
   status: GitStatus
-  skipUntracked?: boolean; skipPullCheck?: boolean; hidden?: boolean
+  skipUntracked?: boolean; skipPullCheck?: boolean; hidden?: boolean; pinned?: boolean
 }

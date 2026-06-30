@@ -400,7 +400,7 @@ export default function App() {
     setFetchCurrentRepo("");
   }
 
-  async function updateRepoSettings(repoPath: string, settings: { skipUntracked?: boolean; skipPullCheck?: boolean; hidden?: boolean }) {
+  async function updateRepoSettings(repoPath: string, settings: { skipUntracked?: boolean; skipPullCheck?: boolean; hidden?: boolean; pinned?: boolean }) {
     await api.updateRepoSettings(repoPath, settings);
     setRepos(prev => {
       const next = prev.slice();
@@ -581,13 +581,14 @@ export default function App() {
     const key = sortKey();
     const isGrouped = grouped();
 
-    const cmp = key === "last-commit"
+    const baseCmp = key === "last-commit"
       ? (a: RepoInfo, b: RepoInfo) => (b.status.lastCommitTime ?? 0) - (a.status.lastCommitTime ?? 0)
       : key === "week-activity"
         ? (a: RepoInfo, b: RepoInfo) => b.status.weekCommits - a.status.weekCommits
         : key === "pull-count"
           ? (a: RepoInfo, b: RepoInfo) => (b.status.behind ?? 0) - (a.status.behind ?? 0)
           : (a: RepoInfo, b: RepoInfo) => a.name.localeCompare(b.name);
+    const cmp = (a: RepoInfo, b: RepoInfo) => Number(!!b.pinned) - Number(!!a.pinned) || baseCmp(a, b);
 
     const hidden: RepoInfo[] = [];
     const errored: RepoInfo[] = [];
@@ -665,6 +666,9 @@ export default function App() {
                 <div class="text-[13px] font-medium truncate leading-tight"
                   classList={{ "text-zinc-200": !repo().cached, "text-zinc-400": repo().cached }}
                 >{repo().name}</div>
+                <Show when={repo().pinned}>
+                  <span class="text-[10px] text-sky-400/80" title="Pinned">◆</span>
+                </Show>
                 <Show when={isRemote()}>
                   <span class="text-[10px] px-1 py-0.5 rounded bg-indigo-500/10 text-indigo-400/70 border border-indigo-500/20 leading-none">{repo().machine}</span>
                 </Show>
@@ -1039,6 +1043,14 @@ export default function App() {
         </div>
 
         <div class="border-t border-zinc-800/40 pt-3">
+          <button
+            onClick={async () => {
+              await updateRepoSettings(repo().path, { pinned: !repo().pinned });
+            }}
+            class="w-full text-left text-[11px] text-zinc-500 hover:text-zinc-300 transition-colors mb-1.5"
+          >
+            {repo().pinned ? "◆ Unpin repo" : "◆ Pin repo"}
+          </button>
           <button
             onClick={async () => {
               await updateRepoSettings(repo().path, { hidden: !repo().hidden });

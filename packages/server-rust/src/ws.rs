@@ -486,6 +486,7 @@ async fn handle_update_repo_settings(
             skip_untracked: false,
             skip_pull_check: false,
             hidden: false,
+            pinned: false,
         });
         if let Some(v) = params.get("skipUntracked").and_then(|v| v.as_bool()) {
             settings.skip_untracked = v;
@@ -495,6 +496,9 @@ async fn handle_update_repo_settings(
         }
         if let Some(v) = params.get("hidden").and_then(|v| v.as_bool()) {
             settings.hidden = v;
+        }
+        if let Some(v) = params.get("pinned").and_then(|v| v.as_bool()) {
+            settings.pinned = v;
         }
         break;
     }

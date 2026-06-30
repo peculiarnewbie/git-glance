@@ -62,7 +62,10 @@ fn opencode_failure(status: std::process::ExitStatus, stdout: &[u8], stderr: &[u
     if parts.len() == 1 {
         parts.push("no stdout or stderr captured".to_string());
     }
-    parts.push("Check `opencode providers` on this machine to confirm the model provider is connected.".to_string());
+    parts.push(
+        "Check `opencode providers` on this machine to confirm the model provider is connected."
+            .to_string(),
+    );
     parts.join("\n")
 }
 

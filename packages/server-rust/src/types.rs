@@ -9,6 +9,8 @@ pub struct GitRepoSettings {
     pub skip_pull_check: bool,
     #[serde(default)]
     pub hidden: bool,
+    #[serde(default)]
+    pub pinned: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
