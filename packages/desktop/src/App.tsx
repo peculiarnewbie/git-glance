@@ -152,9 +152,10 @@ export default function App() {
   const [collapsed, setCollapsed] = createSignal<Set<string>>(new Set(["Hidden"]));
 
   const [loading, setLoading] = createSignal(true);
-  const [config, setConfig] = createSignal<{ opencodeModel: string; token?: string; machines?: { name: string; url: string; token?: string }[] }>({ opencodeModel: "CrofAI/deepseek-v4-flash" });
+  const [config, setConfig] = createSignal<{ opencodeModel: string; token?: string; excludedDirs?: string[]; machines?: { name: string; url: string; token?: string }[] }>({ opencodeModel: "CrofAI/deepseek-v4-flash" });
   const [showSettings, setShowSettings] = createSignal(false);
   const [modelDraft, setModelDraft] = createSignal("");
+  const [excludeDraft, setExcludeDraft] = createSignal("");
   const [commitBusy, setCommitBusy] = createSignal<string | null>(null);
   const [commitPhase, setCommitPhase] = createSignal<string>("");
   const [commitError, setCommitError] = createSignal<{ repoPath: string; error: string } | null>(null);
@@ -167,6 +168,7 @@ export default function App() {
   type FetchPhaseType = import("./api").FetchEvent['phase'];
   type FetchErrorType = import("./api").FetchEvent['error'];
   const [machineFilter, setMachineFilter] = createSignal<string | null>(null);
+  const [search, setSearch] = createSignal("");
   const [machines, setMachines] = createSignal<{ name: string; url: string; online: boolean }[]>([]);
   const [machineNameDraft, setMachineNameDraft] = createSignal("");
   const [machineUrlDraft, setMachineUrlDraft] = createSignal("");
@@ -202,6 +204,7 @@ export default function App() {
 
   let scanController: AbortController | null = null;
   let settingsRef: HTMLDivElement | undefined;
+  let searchInput: HTMLInputElement | undefined;
 
   createEffect(() => {
     if (!showSettings()) return;
@@ -210,6 +213,18 @@ export default function App() {
     };
     document.addEventListener("mousedown", handler);
     onCleanup(() => document.removeEventListener("mousedown", handler));
+  });
+
+  onMount(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== "/" || e.ctrlKey || e.metaKey || e.altKey) return;
+      const t = e.target as HTMLElement | null;
+      if (t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.tagName === "SELECT" || t.isContentEditable)) return;
+      e.preventDefault();
+      searchInput?.focus();
+    };
+    document.addEventListener("keydown", onKey);
+    onCleanup(() => document.removeEventListener("keydown", onKey));
   });
   let commitController: AbortController | null = null;
   let fetchController: AbortController | null = null;
@@ -256,7 +271,7 @@ export default function App() {
 
     const cfg = await api.getConfig();
     if (cfg) {
-      setConfig({ opencodeModel: cfg.opencodeModel, token: (cfg as any).token, machines: cfg.machines?.map(m => ({ name: m.name, url: m.url, token: m.token })) });
+      setConfig({ opencodeModel: cfg.opencodeModel, token: (cfg as any).token, excludedDirs: cfg.excludedDirs ?? [], machines: cfg.machines?.map(m => ({ name: m.name, url: m.url, token: m.token })) });
       setMachines((cfg.machines || []).map(m => ({ name: m.name, url: m.url, online: m.online })));
       if (cfg.rootDir) setDir(cfg.rootDir);
     }
@@ -274,27 +289,29 @@ export default function App() {
     if (flushTimer !== null) clearTimeout(flushTimer);
   });
 
-  async function handleSelect() {
-    let result: string | null = null;
+  async function pickDirectory(): Promise<string | null> {
     try {
       const { Electroview } = await import("electrobun/view");
       const ev = new Electroview({});
-      result = (await ev.rpc.request.selectDirectory()) as string | null;
+      return (await ev.rpc.request.selectDirectory()) as string | null;
     } catch {
-      // Fallback: running in browser (Vite dev) — show modal
+      // Running in browser (Vite dev) — no native picker available
+      return null;
     }
+  }
+
+  async function handleSelect() {
+    const result = await pickDirectory();
     if (!result) {
       setDirInputValue(dir() || "");
       setDirInputError(null);
       setShowDirModal(true);
       return;
     }
-    if (result) {
-      setDir(result);
-      setRepos([]);
-      setCommitError(null);
-      await api.setConfig({ rootDir: result });
-    }
+    setDir(result);
+    setRepos([]);
+    setCommitError(null);
+    await api.setConfig({ rootDir: result });
   }
 
   async function submitDirInput() {
@@ -400,7 +417,7 @@ export default function App() {
     setFetchCurrentRepo("");
   }
 
-  async function updateRepoSettings(repoPath: string, settings: { skipUntracked?: boolean; skipPullCheck?: boolean; hidden?: boolean; pinned?: boolean }) {
+  async function updateRepoSettings(repoPath: string, settings: { skipUntracked?: boolean; skipPullCheck?: boolean; autoPullIfClean?: boolean; hidden?: boolean; pinned?: boolean }) {
     await api.updateRepoSettings(repoPath, settings);
     setRepos(prev => {
       const next = prev.slice();
@@ -505,6 +522,8 @@ export default function App() {
 
   const [repoActionBusy, setRepoActionBusy] = createSignal<Set<string>>(new Set());
   const [repoActionMsg, setRepoActionMsg] = createSignal<Map<string, string>>(new Map());
+  const [bulkPullBusy, setBulkPullBusy] = createSignal(false);
+  const [bulkPullMsg, setBulkPullMsg] = createSignal<string | null>(null);
 
   function setRepoBusy(repoPath: string, busy: boolean) {
     setRepoActionBusy(prev => {
@@ -570,6 +589,51 @@ export default function App() {
     setTimeout(() => setRepoMsg(repoPath, null), 2000);
   }
 
+  function canSafePull(repo: RepoInfo) {
+    return repo.status.behind > 0
+      && repo.status.ahead === 0
+      && !repo.status.hasChanges
+      && repo.status.staged === 0
+      && repo.status.unstaged === 0
+      && repo.status.untracked === 0;
+  }
+
+  async function handlePullCleanBehind(reposToPull: RepoInfo[]) {
+    if (bulkPullBusy()) return;
+    const safeRepos = reposToPull.filter(canSafePull);
+    if (safeRepos.length === 0) {
+      setBulkPullMsg("No clean repos");
+      setTimeout(() => setBulkPullMsg(null), 2000);
+      return;
+    }
+
+    setBulkPullBusy(true);
+    setBulkPullMsg(`0/${safeRepos.length}`);
+    let pulled = 0;
+    let failed = 0;
+
+    for (const repo of safeRepos) {
+      setRepoBusy(repo.path, true);
+      setRepoMsg(repo.path, "Pulling...");
+      const result = await api.pullRepo(repo.path, repo.machine !== "local" ? repo.machine : undefined);
+      if (result.ok) {
+        pulled += 1;
+        setRepoMsg(repo.path, "Pulled");
+        await handleRefreshRepo(repo.path);
+      } else {
+        failed += 1;
+        setRepoMsg(repo.path, result.error || "Failed");
+      }
+      setRepoBusy(repo.path, false);
+      setBulkPullMsg(`${pulled + failed}/${safeRepos.length}`);
+      setTimeout(() => setRepoMsg(repo.path, null), 2000);
+    }
+
+    setBulkPullBusy(false);
+    setBulkPullMsg(failed > 0 ? `${pulled} pulled, ${failed} failed` : `${pulled} pulled`);
+    setTimeout(() => setBulkPullMsg(null), 2500);
+  }
+
   const selectedRepoData = createMemo(() => {
     const sel = selectedRepo();
     return sel ? repos().find(r => r.path === sel) : undefined;
@@ -577,7 +641,15 @@ export default function App() {
   const hasCached = () => repos().some(r => r.cached);
 
   const listData = createMemo(() => {
-    const all = machineFilter() ? repos().filter(r => r.machine === machineFilter()) : repos();
+    let all = machineFilter() ? repos().filter(r => r.machine === machineFilter()) : repos();
+    const q = search().trim().toLowerCase();
+    if (q) {
+      all = all.filter(r =>
+        r.name.toLowerCase().includes(q) ||
+        r.path.toLowerCase().includes(q) ||
+        (r.status.branch ?? "").toLowerCase().includes(q)
+      );
+    }
     const key = sortKey();
     const isGrouped = grouped();
 
@@ -1040,6 +1112,18 @@ export default function App() {
             />
             Skip pull check
           </label>
+          <label class="flex items-center gap-2 text-[11px] text-zinc-400 cursor-pointer select-none hover:text-zinc-300 transition-colors mt-1.5">
+            <input
+              type="checkbox"
+              checked={repo().autoPullIfClean === true}
+              onChange={async (e) => {
+                await updateRepoSettings(repo().path, { autoPullIfClean: e.currentTarget.checked });
+              }}
+              class="w-3 h-3 appearance-none bg-zinc-900 border border-zinc-700 rounded cursor-pointer"
+              classList={{ "bg-amber-500/20 border-amber-500/60": repo().autoPullIfClean }}
+            />
+            Auto-pull when clean
+          </label>
         </div>
 
         <div class="border-t border-zinc-800/40 pt-3">
@@ -1067,22 +1151,40 @@ export default function App() {
 
   function Section(props: { title: string; icon: string; repos: RepoInfo[] }) {
     const isCollapsed = () => collapsed().has(props.title);
+    const isBehindSection = () => props.title === "Behind Remote";
+    const safePullCount = () => props.repos.filter(canSafePull).length;
     return (
       <div class="mb-4 last:mb-0">
-        <button
-          onMouseDown={() => toggleCollapsed(props.title)}
-          class="flex items-center gap-2 w-full text-left mb-1.5 group px-1.5 py-0.5 rounded hover:bg-zinc-800/40 transition-colors"
-        >
-          <svg
-            class="w-2.5 h-2.5 text-zinc-700 transition-transform duration-150 group-hover:text-zinc-500"
-            classList={{ "rotate-90": !isCollapsed() }}
-            fill="none" viewBox="0 0 24 24" stroke="currentColor"
+        <div class="flex items-center justify-between gap-2 mb-1.5">
+          <button
+            onMouseDown={() => toggleCollapsed(props.title)}
+            class="flex items-center gap-2 min-w-0 text-left group px-1.5 py-0.5 rounded hover:bg-zinc-800/40 transition-colors"
           >
-            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M9 5l7 7-7 7" />
-          </svg>
-          <span class="text-[11px] font-medium text-zinc-500 uppercase tracking-[0.1em]">{props.icon} {props.title}</span>
-          <span class="text-[11px] text-zinc-700">{props.repos.length}</span>
-        </button>
+            <svg
+              class="w-2.5 h-2.5 text-zinc-700 transition-transform duration-150 group-hover:text-zinc-500"
+              classList={{ "rotate-90": !isCollapsed() }}
+              fill="none" viewBox="0 0 24 24" stroke="currentColor"
+            >
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M9 5l7 7-7 7" />
+            </svg>
+            <span class="text-[11px] font-medium text-zinc-500 uppercase tracking-[0.1em] truncate">{props.icon} {props.title}</span>
+            <span class="text-[11px] text-zinc-700">{props.repos.length}</span>
+          </button>
+          <Show when={isBehindSection()}>
+            <button
+              onMouseDown={(e) => { e.stopPropagation(); void handlePullCleanBehind(props.repos); }}
+              disabled={bulkPullBusy() || safePullCount() === 0}
+              title={safePullCount() === props.repos.length ? "Pull all behind repos" : `Pull ${safePullCount()} clean behind repos; dirty or ahead repos are skipped`}
+              class="shrink-0 flex items-center gap-1 px-2 py-0.5 bg-orange-500/10 hover:bg-orange-500/20 border border-orange-500/20 rounded text-[10px] text-orange-400/80 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+            >
+              <span>{bulkPullBusy() ? "Pulling" : "Pull clean"}</span>
+              <span class="text-orange-500/50">{safePullCount()}</span>
+              <Show when={bulkPullMsg()}>
+                <span class="text-zinc-500">· {bulkPullMsg()}</span>
+              </Show>
+            </button>
+          </Show>
+        </div>
         <Show when={!isCollapsed()}>
           <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-2">
             <For each={props.repos}>{(repo) => <RepoCard repo={repo} />}</For>
@@ -1178,17 +1280,72 @@ export default function App() {
                     />
                     <div class="flex items-center justify-between mb-4">
                       <span class="text-[10px] text-zinc-600">e.g. CrofAI/deepseek-v4-flash</span>
-                      <button
-                        onClick={async () => {
-                          const newConfig = { opencodeModel: modelDraft() || "CrofAI/deepseek-v4-flash", machines: config().machines };
-                          await api.setConfig(newConfig);
-                          setConfig(newConfig);
-                          setShowSettings(false);
-                        }}
+                       <button
+                         onClick={async () => {
+                           const newConfig = { opencodeModel: modelDraft() || "CrofAI/deepseek-v4-flash", excludedDirs: config().excludedDirs, machines: config().machines };
+                           await api.setConfig(newConfig);
+                           setConfig(newConfig);
+                           setShowSettings(false);
+                         }}
                         class="px-2.5 py-1 bg-sky-600/80 hover:bg-sky-500 rounded text-[11px] font-medium transition-colors"
                       >
                         Save
                       </button>
+                    </div>
+
+                    <div class="border-t border-zinc-800 pt-3 mb-4">
+                      <div class="text-[11px] font-medium text-zinc-400 mb-2 uppercase tracking-wider">Excluded Folders</div>
+                      <div class="text-[10px] text-zinc-600 mb-2">Folders here and everything under them are skipped when scanning.</div>
+                      <For each={config().excludedDirs ?? []}>{(d) =>
+                        <div class="flex items-center justify-between py-1.5 px-2 bg-zinc-800/50 rounded mb-1">
+                          <span class="text-[11px] text-zinc-300 truncate font-mono" title={d}>{d}</span>
+                          <button
+                            onClick={async () => {
+                              const updated = (config().excludedDirs ?? []).filter(x => x !== d)
+                              const newConfig = { opencodeModel: config().opencodeModel, excludedDirs: updated, machines: config().machines }
+                              await api.setConfig(newConfig)
+                              setConfig(newConfig)
+                            }}
+                            class="text-zinc-600 hover:text-red-400 text-[14px] leading-none ml-2 shrink-0"
+                          >×</button>
+                        </div>
+                      }</For>
+                      <Show when={(config().excludedDirs ?? []).length === 0}>
+                        <div class="text-[10px] text-zinc-600 italic mb-1">No folders excluded.</div>
+                      </Show>
+                      <div class="flex items-center gap-1 mt-2">
+                        <input
+                          value={excludeDraft()}
+                          onInput={(e) => setExcludeDraft(e.currentTarget.value)}
+                          placeholder="C:\Projects\archive"
+                          class="flex-1 bg-zinc-800 border border-zinc-700 rounded px-2 py-1.5 text-[11px] text-zinc-300 font-mono focus:outline-none focus:border-zinc-500 min-w-0"
+                        />
+                        <button
+                          onMouseDown={async (e) => {
+                            e.preventDefault();
+                            const picked = await pickDirectory();
+                            if (picked) setExcludeDraft(picked);
+                          }}
+                          class="px-2 py-1.5 bg-zinc-700 hover:bg-zinc-600 rounded text-[11px] font-medium transition-colors shrink-0"
+                        >Browse</button>
+                        <button
+                          onClick={async () => {
+                            const p = excludeDraft().trim();
+                            if (!p) return;
+                            const current = config().excludedDirs ?? [];
+                            if (current.some(x => x.toLowerCase() === p.toLowerCase())) {
+                              setExcludeDraft("");
+                              return;
+                            }
+                            const updated = [...current, p];
+                            const newConfig = { opencodeModel: config().opencodeModel, excludedDirs: updated, machines: config().machines }
+                            await api.setConfig(newConfig)
+                            setConfig(newConfig)
+                            setExcludeDraft("")
+                          }}
+                          class="px-2 py-1.5 bg-zinc-700 hover:bg-zinc-600 rounded text-[11px] font-medium transition-colors shrink-0"
+                        >+</button>
+                      </div>
                     </div>
 
                     <div class="border-t border-zinc-800 pt-3 mb-2">
@@ -1211,7 +1368,7 @@ export default function App() {
                           <button
                             onClick={async () => {
                               const updated = (config().machines ?? []).filter(x => x.name !== m.name)
-                              const newConfig = { opencodeModel: config().opencodeModel, machines: updated }
+                              const newConfig = { opencodeModel: config().opencodeModel, excludedDirs: config().excludedDirs, machines: updated }
                               await api.setConfig(newConfig)
                               setConfig(newConfig)
                               setMachines(updated.map(x => ({ ...x, online: machines().find(m2 => m2.name === x.name)?.online ?? false })))
@@ -1247,7 +1404,7 @@ export default function App() {
                             const token = machineTokenDraft().trim()
                             if (!name || !url || !token) return
                             const updated = [...(config().machines ?? []), { name, url, token }]
-                            const newConfig = { opencodeModel: config().opencodeModel, machines: updated }
+                            const newConfig = { opencodeModel: config().opencodeModel, excludedDirs: config().excludedDirs, machines: updated }
                             await api.setConfig(newConfig)
                             setConfig(newConfig)
                             setMachines(updated.map(x => ({ ...x, online: machines().find(m2 => m2.name === x.name)?.online ?? false })))
@@ -1385,6 +1542,26 @@ export default function App() {
               </div>
             </Show>
             <div class="ml-auto flex items-center gap-3">
+              <div class="relative">
+                <input
+                  ref={searchInput}
+                  type="text"
+                  value={search()}
+                  onInput={(e) => setSearch(e.currentTarget.value)}
+                  placeholder="Search repos…  /"
+                  class="w-44 sm:w-52 bg-zinc-900 border border-zinc-800 text-[11px] text-zinc-300 rounded-lg pl-7 pr-2 py-1 focus:outline-none focus:border-zinc-600 placeholder:text-zinc-700"
+                />
+                <svg class="w-3.5 h-3.5 text-zinc-600 absolute left-2 top-1/2 -translate-y-1/2 pointer-events-none" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-4.35-4.35M17 10a7 7 0 11-14 0 7 7 0 0114 0z" />
+                </svg>
+                <Show when={search()}>
+                  <button
+                    onMouseDown={() => { setSearch(""); searchInput?.focus(); }}
+                    class="absolute right-1.5 top-1/2 -translate-y-1/2 text-zinc-600 hover:text-zinc-400 text-[14px] leading-none px-1"
+                    title="Clear"
+                  >×</button>
+                </Show>
+              </div>
               <div class="flex items-center gap-2">
                 <span class="text-[11px] text-zinc-600">sort</span>
                 <select
@@ -1412,28 +1589,41 @@ export default function App() {
           </div>
 
           <Show
-            when={grouped()}
+            when={search().trim() && listData().counts.total === 0}
             fallback={
-              <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-2">
-                <For each={listData().groups.clean}>{(repo) => <RepoCard repo={repo} />}</For>
-              </div>
+              <Show
+                when={grouped()}
+                fallback={
+                  <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-2">
+                    <For each={listData().groups.clean}>{(repo) => <RepoCard repo={repo} />}</For>
+                  </div>
+                }
+              >
+                <Show when={listData().counts.errored > 0}>
+                  <Section title="Errors" icon="!" repos={listData().groups.errored} />
+                </Show>
+                <Show when={listData().counts.stale > 0}>
+                  <Section title="Behind Remote" icon="⇣" repos={listData().groups.stale} />
+                </Show>
+                <Show when={listData().counts.dirty > 0}>
+                  <Section title="Uncommitted" icon="~" repos={listData().groups.dirty} />
+                </Show>
+                <Show when={listData().counts.clean > 0}>
+                  <Section title="Clean" icon="·" repos={listData().groups.clean} />
+                </Show>
+                <Show when={listData().counts.hidden > 0}>
+                  <Section title="Hidden" icon="⊘" repos={listData().groups.hidden} />
+                </Show>
+              </Show>
             }
           >
-            <Show when={listData().counts.errored > 0}>
-              <Section title="Errors" icon="!" repos={listData().groups.errored} />
-            </Show>
-            <Show when={listData().counts.stale > 0}>
-              <Section title="Behind Remote" icon="⇣" repos={listData().groups.stale} />
-            </Show>
-            <Show when={listData().counts.dirty > 0}>
-              <Section title="Uncommitted" icon="~" repos={listData().groups.dirty} />
-            </Show>
-            <Show when={listData().counts.clean > 0}>
-              <Section title="Clean" icon="·" repos={listData().groups.clean} />
-            </Show>
-            <Show when={listData().counts.hidden > 0}>
-              <Section title="Hidden" icon="⊘" repos={listData().groups.hidden} />
-            </Show>
+            <div class="text-center py-16 text-zinc-700">
+              <p class="text-sm">No repos match “{search().trim()}”</p>
+              <button
+                onMouseDown={() => { setSearch(""); searchInput?.focus(); }}
+                class="mt-2 text-[11px] text-zinc-500 hover:text-zinc-300 transition-colors"
+              >Clear search</button>
+            </div>
           </Show>
         </Show>
 

@@ -153,7 +153,7 @@ export interface RepoData {
   ahead: number; behind: number; remote: string | null
   lastCommitTime: number | null; weekCommits: number; lastScanTime: number | null
   error: string | null; machine: string
-  settings: { skipUntracked: boolean; skipPullCheck: boolean; hidden: boolean; pinned: boolean } | null
+  settings: { skipUntracked: boolean; skipPullCheck: boolean; autoPullIfClean: boolean; hidden: boolean; pinned: boolean } | null
 }
 
 // Derive RepoInfo from the schema of truth (WebSocket response)
@@ -187,6 +187,7 @@ export interface RepoInfo {
   };
   skipUntracked?: boolean;
   skipPullCheck?: boolean;
+  autoPullIfClean?: boolean;
   hidden?: boolean;
   pinned?: boolean;
 }
@@ -198,6 +199,7 @@ export interface ReposResponse {
 
 export interface ServerConfigResponse {
   rootDir: string | null; opencodeModel: string; token?: string
+  excludedDirs?: string[]
   machines: { name: string; url: string; token?: string; online: boolean }[]
 }
 
@@ -221,7 +223,7 @@ export const api = {
 
   getConfig: (): Promise<ServerConfigResponse> => send<ServerConfigResponse>("getConfig"),
 
-  setConfig: (config: { rootDir?: string; opencodeModel?: string; machines?: { name: string; url: string; token?: string }[] }): Promise<void> =>
+  setConfig: (config: { rootDir?: string; opencodeModel?: string; excludedDirs?: string[]; machines?: { name: string; url: string; token?: string }[] }): Promise<void> =>
     send("setConfig", config),
 
   pullRepo: (repo: RepoPath, machine?: string): Promise<{ ok: boolean; output?: string; error?: string }> =>
@@ -230,7 +232,7 @@ export const api = {
   pushRepo: (repo: RepoPath, machine?: string): Promise<{ ok: boolean; output?: string; error?: string }> =>
     send("push", { repo, machine }),
 
-  updateRepoSettings: (repo: RepoPath, settings: { skipUntracked?: boolean; skipPullCheck?: boolean; hidden?: boolean; pinned?: boolean }): Promise<void> =>
+  updateRepoSettings: (repo: RepoPath, settings: { skipUntracked?: boolean; skipPullCheck?: boolean; autoPullIfClean?: boolean; hidden?: boolean; pinned?: boolean }): Promise<void> =>
     send("updateRepoSettings", { repo, ...settings }),
 
   cancelScan: (): Promise<void> => send("cancel").then(() => {}),
@@ -330,6 +332,7 @@ export function repoDataToInfo(r: RepoData): RepoInfo {
     path: r.path, name: r.name, machine: r.machine, cached: false,
     skipUntracked: r.settings?.skipUntracked ?? false,
     skipPullCheck: r.settings?.skipPullCheck ?? false,
+    autoPullIfClean: r.settings?.autoPullIfClean ?? false,
     hidden: r.settings?.hidden ?? false,
     pinned: r.settings?.pinned ?? false,
     status: {
@@ -356,5 +359,5 @@ interface GitStatus {
 export interface RepoInfo {
   path: string; name: string; machine: string; cached: boolean
   status: GitStatus
-  skipUntracked?: boolean; skipPullCheck?: boolean; hidden?: boolean; pinned?: boolean
+  skipUntracked?: boolean; skipPullCheck?: boolean; autoPullIfClean?: boolean; hidden?: boolean; pinned?: boolean
 }

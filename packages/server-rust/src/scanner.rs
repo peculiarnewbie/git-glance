@@ -43,17 +43,51 @@ pub fn reset_cancel() {
     SCAN_CANCELED.store(false, Ordering::SeqCst);
 }
 
-fn find_git_repos(root_dir: &str) -> Vec<String> {
+fn find_git_repos(root_dir: &str, excluded_dirs: &[String]) -> Vec<String> {
     let mut repos = Vec::new();
     let root = Path::new(root_dir);
     if !root.exists() {
         return repos;
     }
-    walk_dir(root, &mut repos);
+    let excludes: Vec<String> = excluded_dirs
+        .iter()
+        .filter_map(|s| {
+            let t = s.trim();
+            if t.is_empty() {
+                return None;
+            }
+            Some(normalize_path(Path::new(t)))
+        })
+        .collect();
+    walk_dir(root, &mut repos, &excludes);
     repos
 }
 
-fn walk_dir(dir: &Path, repos: &mut Vec<String>) {
+/// Normalize a path for comparison: strip the Windows verbatim (`\\?\`)
+/// prefix, use `/` separators, drop trailing slashes. On Windows paths are
+/// case-insensitive, so we lowercase there. This lets an exclude like
+/// `C:\Projects\Archive` match a walked `c:\projects\archive` or
+/// `\\?\C:\projects\archive`.
+fn normalize_path(p: &Path) -> String {
+    let s = p.to_string_lossy();
+    let s = s.strip_prefix(r"\\?\").unwrap_or(&s);
+    let s = s.replace('\\', "/");
+    let s = s.trim_end_matches('/');
+    #[cfg(windows)]
+    let s = s.to_lowercase();
+    s.to_string()
+}
+
+/// True if `path` is `prefix` itself or a descendant of it, using the
+/// normalized form so Windows casing / verbatim prefixes don't cause
+/// false negatives. The trailing-slash check keeps it component-aware
+/// (so `/a/proj` does not match `/a/projects`).
+fn is_under(path: &Path, prefix_norm: &str) -> bool {
+    let np = normalize_path(path);
+    np == prefix_norm || np.starts_with(&format!("{}/", prefix_norm))
+}
+
+fn walk_dir(dir: &Path, repos: &mut Vec<String>, excludes: &[String]) {
     let entries = match std::fs::read_dir(dir) {
         Ok(e) => e,
         Err(_) => return,
@@ -64,6 +98,11 @@ fn walk_dir(dir: &Path, repos: &mut Vec<String>) {
         let name = entry.file_name().to_string_lossy().to_string();
 
         if !path.is_dir() {
+            continue;
+        }
+
+        // Skip anything at or under an excluded folder.
+        if excludes.iter().any(|ex| is_under(&path, ex)) {
             continue;
         }
 
@@ -84,7 +123,7 @@ fn walk_dir(dir: &Path, repos: &mut Vec<String>) {
             continue;
         }
 
-        walk_dir(&path, repos);
+        walk_dir(&path, repos, excludes);
     }
 }
 
@@ -157,16 +196,29 @@ fn merge_settings(repo: &mut GitRepo, settings_map: &HashMap<String, GitRepoSett
     }
 }
 
+fn can_auto_pull(repo: &GitRepo) -> bool {
+    repo.settings
+        .as_ref()
+        .map_or(false, |s| s.auto_pull_if_clean)
+        && repo.behind > 0
+        && repo.ahead == 0
+        && !repo.has_changes
+        && repo.staged == 0
+        && repo.unstaged == 0
+        && repo.untracked == 0
+}
+
 pub async fn scan_all(
     git: Arc<GitService>,
     cache: Arc<CacheService>,
     root_dir: String,
+    excluded_dirs: Vec<String>,
     machine: String,
     progress_tx: mpsc::Sender<ScanProgress>,
 ) {
     log_rss("scan_all start");
     release_memory();
-    let repo_paths = find_git_repos(&root_dir);
+    let repo_paths = find_git_repos(&root_dir, &excluded_dirs);
     let total = repo_paths.len();
 
     let _ = progress_tx
@@ -298,7 +350,7 @@ pub async fn scan_all(
 
             let status = git.get_status_with_lock(&repo.path).await.ok();
 
-            let updated = if let Some(status) = status {
+            let mut updated = if let Some(status) = status {
                 let commit_time_ms = status.last_commit_time.map(|t| t * 1000).unwrap_or(0);
                 GitRepo {
                     name: repo.name.clone(),
@@ -324,6 +376,38 @@ pub async fn scan_all(
             } else {
                 repo
             };
+
+            if can_auto_pull(&updated)
+                && git
+                    .run_with_lock("pull --ff-only", &updated.path, Duration::from_secs(30))
+                    .await
+                    .is_ok()
+            {
+                if let Ok(status) = git.get_status_with_lock(&updated.path).await {
+                    let commit_time_ms = status.last_commit_time.map(|t| t * 1000).unwrap_or(0);
+                    updated = GitRepo {
+                        name: updated.name,
+                        path: updated.path,
+                        branch: Some(status.branch),
+                        has_changes: status.has_changes,
+                        staged: status.staged,
+                        staged_files: status.staged_files,
+                        unstaged: status.unstaged,
+                        unstaged_files: status.unstaged_files,
+                        untracked: status.untracked,
+                        untracked_files: status.untracked_files,
+                        ahead: status.ahead,
+                        behind: status.behind,
+                        remote: status.remote,
+                        last_commit_time: Some(commit_time_ms),
+                        week_commits: status.week_commits,
+                        last_scan_time: Some(now_millis()),
+                        machine: updated.machine,
+                        error: None,
+                        settings: updated.settings,
+                    };
+                }
+            }
 
             (idx, updated)
         }));
@@ -374,12 +458,13 @@ pub async fn scan_only(
     git: Arc<GitService>,
     cache: Arc<CacheService>,
     root_dir: String,
+    excluded_dirs: Vec<String>,
     machine: String,
     progress_tx: mpsc::Sender<ScanProgress>,
 ) {
     log_rss("scan_only start");
     release_memory();
-    let repo_paths = find_git_repos(&root_dir);
+    let repo_paths = find_git_repos(&root_dir, &excluded_dirs);
     let total = repo_paths.len();
 
     let _ = progress_tx

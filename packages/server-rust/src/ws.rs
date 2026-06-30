@@ -182,6 +182,7 @@ async fn handle_get_config(req: &WSRequest, deps: &ServerDeps, tx: &mpsc::Sender
                 "rootDir": root_dir,
                 "opencodeModel": model,
                 "token": cfg.token,
+                "excludedDirs": cfg.excluded_dirs,
                 "machines": machines_with_online,
             }),
         ),
@@ -220,6 +221,13 @@ async fn handle_set_config(req: &WSRequest, deps: &ServerDeps, tx: &mpsc::Sender
             .collect();
         existing.machines = cfg_machines;
         deps.peers.update_config(&existing).await;
+    }
+    if let Some(arr) = params.get("excludedDirs").and_then(|v| v.as_array()) {
+        existing.excluded_dirs = arr
+            .iter()
+            .filter_map(|v| v.as_str().map(|s| s.trim().to_string()))
+            .filter(|s| !s.is_empty())
+            .collect();
     }
 
     deps.cache.save_config(&existing).await;
@@ -427,6 +435,30 @@ async fn handle_check_pull(req: &WSRequest, deps: &ServerDeps, tx: &mpsc::Sender
         .run_with_lock("fetch origin", repo, Duration::from_secs(30))
         .await;
 
+    if let Ok(status) = deps.git.get_status_with_lock(repo).await {
+        let should_auto_pull = deps
+            .cache
+            .get_all_repos()
+            .await
+            .into_iter()
+            .find(|r| r.path == repo)
+            .and_then(|r| r.settings)
+            .map_or(false, |s| s.auto_pull_if_clean)
+            && status.behind > 0
+            && status.ahead == 0
+            && !status.has_changes
+            && status.staged == 0
+            && status.unstaged == 0
+            && status.untracked == 0;
+
+        if should_auto_pull {
+            let _ = deps
+                .git
+                .run_with_lock("pull --ff-only", repo, Duration::from_secs(30))
+                .await;
+        }
+    }
+
     match update_repo_in_cache(deps, repo).await {
         Some(updated) => {
             send_response(
@@ -485,6 +517,7 @@ async fn handle_update_repo_settings(
         let settings = r.settings.get_or_insert_with(|| GitRepoSettings {
             skip_untracked: false,
             skip_pull_check: false,
+            auto_pull_if_clean: false,
             hidden: false,
             pinned: false,
         });
@@ -493,6 +526,9 @@ async fn handle_update_repo_settings(
         }
         if let Some(v) = params.get("skipPullCheck").and_then(|v| v.as_bool()) {
             settings.skip_pull_check = v;
+        }
+        if let Some(v) = params.get("autoPullIfClean").and_then(|v| v.as_bool()) {
+            settings.auto_pull_if_clean = v;
         }
         if let Some(v) = params.get("hidden").and_then(|v| v.as_bool()) {
             settings.hidden = v;
@@ -523,6 +559,10 @@ async fn handle_scan(req: &WSRequest, deps: &ServerDeps, tx: &mpsc::Sender<Strin
     scanner::reset_cancel();
     deps.cache.add_scanned_dir(root_dir).await;
 
+    let cfg = deps.cache.load_config().await;
+    let excluded_dirs = cfg.excluded_dirs.clone();
+    drop(cfg);
+
     let (progress_tx, mut progress_rx) = mpsc::channel(100);
     let git = deps.git.clone();
     let cache = deps.cache.clone();
@@ -530,7 +570,7 @@ async fn handle_scan(req: &WSRequest, deps: &ServerDeps, tx: &mpsc::Sender<Strin
     let root = root_dir.to_string();
 
     tokio::spawn(async move {
-        scanner::scan_all(git, cache, root, machine, progress_tx).await;
+        scanner::scan_all(git, cache, root, excluded_dirs, machine, progress_tx).await;
     });
 
     while let Some(p) = progress_rx.recv().await {
@@ -564,6 +604,10 @@ async fn handle_scan_only(req: &WSRequest, deps: &ServerDeps, tx: &mpsc::Sender<
     scanner::reset_cancel();
     deps.cache.add_scanned_dir(root_dir).await;
 
+    let cfg = deps.cache.load_config().await;
+    let excluded_dirs = cfg.excluded_dirs.clone();
+    drop(cfg);
+
     let (progress_tx, mut progress_rx) = mpsc::channel(100);
     let git = deps.git.clone();
     let cache = deps.cache.clone();
@@ -571,7 +615,7 @@ async fn handle_scan_only(req: &WSRequest, deps: &ServerDeps, tx: &mpsc::Sender<
     let root = root_dir.to_string();
 
     tokio::spawn(async move {
-        scanner::scan_only(git, cache, root, machine, progress_tx).await;
+        scanner::scan_only(git, cache, root, excluded_dirs, machine, progress_tx).await;
     });
 
     while let Some(p) = progress_rx.recv().await {
@@ -945,6 +989,30 @@ async fn handle_fetch_all(req: &WSRequest, deps: &ServerDeps, tx: &mpsc::Sender<
             .await;
 
         let status = deps.git.get_status_with_lock(&repo.path).await.ok();
+        let should_auto_pull = repo
+            .settings
+            .as_ref()
+            .map_or(false, |s| s.auto_pull_if_clean)
+            && status.as_ref().map_or(false, |s| {
+                s.behind > 0
+                    && s.ahead == 0
+                    && !s.has_changes
+                    && s.staged == 0
+                    && s.unstaged == 0
+                    && s.untracked == 0
+            });
+
+        let status = if should_auto_pull
+            && deps
+                .git
+                .run_with_lock("pull --ff-only", &repo.path, Duration::from_secs(30))
+                .await
+                .is_ok()
+        {
+            deps.git.get_status_with_lock(&repo.path).await.ok()
+        } else {
+            status
+        };
         let (a, b) = if let Some(ref s) = status {
             (Some(s.ahead), Some(s.behind))
         } else {

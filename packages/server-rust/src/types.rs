@@ -8,6 +8,8 @@ pub struct GitRepoSettings {
     #[serde(default)]
     pub skip_pull_check: bool,
     #[serde(default)]
+    pub auto_pull_if_clean: bool,
+    #[serde(default)]
     pub hidden: bool,
     #[serde(default)]
     pub pinned: bool,
@@ -185,6 +187,8 @@ pub struct PersistedConfig {
     pub token: String,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub machines: Vec<ServerConfigMachine>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub excluded_dirs: Vec<String>,
 }
 
 #[derive(Debug, Clone)]
