@@ -1,7 +1,6 @@
 mod cache;
 mod git;
 mod opencode;
-mod peer;
 mod scanner;
 mod types;
 mod ws;
@@ -33,18 +32,10 @@ pub struct CliArgs {
     pub host: String,
     pub static_dir: Option<String>,
     pub dev_url: Option<String>,
-    pub machine_name: Option<String>,
-    pub token: Option<String>,
     pub install_service: bool,
     pub uninstall_service: bool,
     pub install_startup: bool,
     pub uninstall_startup: bool,
-}
-
-fn hostname_or_default() -> String {
-    hostname::get()
-        .map(|h| h.to_string_lossy().to_string())
-        .unwrap_or_else(|_| "local".to_string())
 }
 
 pub fn parse_args() -> CliArgs {
@@ -53,8 +44,6 @@ pub fn parse_args() -> CliArgs {
     let mut host = "0.0.0.0".to_string();
     let mut static_dir = None;
     let mut dev_url = None;
-    let mut machine_name = None;
-    let mut token = None;
     let mut install_service = false;
     let mut uninstall_service = false;
     let mut install_startup = false;
@@ -95,16 +84,6 @@ pub fn parse_args() -> CliArgs {
             "--dev-url" => {
                 if let Some(v) = inline_value.or(value_from_next) {
                     dev_url = Some(v);
-                }
-            }
-            "--name" => {
-                if let Some(v) = inline_value.or(value_from_next) {
-                    machine_name = Some(v);
-                }
-            }
-            "--token" => {
-                if let Some(v) = inline_value.or(value_from_next) {
-                    token = Some(v);
                 }
             }
             "--install-service" => {
@@ -149,17 +128,11 @@ pub fn parse_args() -> CliArgs {
     if let Ok(v) = std::env::var("DEV_URL") {
         dev_url = Some(v);
     }
-    if let Ok(v) = std::env::var("MACHINE_NAME") {
-        machine_name = Some(v);
-    }
-
     CliArgs {
         port,
         host,
         static_dir,
         dev_url,
-        machine_name,
-        token,
         install_service,
         uninstall_service,
         install_startup,
@@ -176,8 +149,6 @@ fn print_help() {
     println!("  --host <HOST>              Bind address (default: 0.0.0.0, env: HOST)");
     println!("  --static <DIR>             Static files directory (env: STATIC_DIR)");
     println!("  --dev-url <URL>            Vite dev server URL for proxy (env: DEV_URL)");
-    println!("  --name <NAME>              Machine name (env: MACHINE_NAME, default: hostname)");
-    println!("  --token <TOKEN>            Peer authentication token");
     println!("  --install-startup          Register for auto-start at logon (Windows Run key / Linux systemd user)");
     println!("  --uninstall-startup        Remove the auto-start entry");
     println!("  --install-service          Install as auto-starting service (systemd on Linux, Windows Service on Windows)");
@@ -455,11 +426,6 @@ pub async fn run_server(args: CliArgs) -> io::Result<()> {
     let host = args.host.clone();
     let static_dir_arg = args.static_dir.clone();
     let dev_url = args.dev_url.clone();
-    let machine_name = args
-        .machine_name
-        .clone()
-        .unwrap_or_else(hostname_or_default);
-    let token_arg = args.token.clone();
 
     let home_dir = dirs::home_dir().expect("cannot get home dir");
     let config_dir = std::env::var("CONFIG_DIR")
@@ -471,35 +437,9 @@ pub async fn run_server(args: CliArgs) -> io::Result<()> {
     let cache = Arc::new(cache::CacheService::new(cache_path, config_path));
     let git = Arc::new(git::GitService::new());
 
-    let mut cfg = cache.load_config().await;
-    let local_token = if let Some(t) = token_arg {
-        t
-    } else if !cfg.token.is_empty() {
-        cfg.token.clone()
-    } else {
-        use rand::Rng;
-        let mut rng = rand::thread_rng();
-        let bytes: Vec<u8> = (0..16).map(|_| rng.gen()).collect();
-        let t = hex::encode(&bytes);
-        cfg.token = t.clone();
-        cache.save_config(&cfg).await;
-        println!("[auth] generated new peer token: {}", t);
-        t
-    };
-
-    let peers = Arc::new(peer::PeerManager::new(
-        machine_name.clone(),
-        local_token,
-        cache.clone(),
-        git.clone(),
-    ));
-    peers.update_config(&cfg).await;
-
     let deps = Arc::new(ws::ServerDeps {
         git: git.clone(),
         cache: cache.clone(),
-        peers: peers.clone(),
-        local_name: machine_name.clone(),
     });
 
     let static_dir = resolve_static_dir(&static_dir_arg);
@@ -517,7 +457,6 @@ pub async fn run_server(args: CliArgs) -> io::Result<()> {
 
     let app = Router::new()
         .route("/ws", get(ws_upgrade_handler))
-        .route("/peer", get(peer_upgrade_handler))
         .route("/health", get(health_handler))
         .fallback(get(static_handler))
         .with_state(state);
@@ -547,15 +486,6 @@ async fn ws_upgrade_handler(
 ) -> impl IntoResponse {
     ws.on_upgrade(|socket| async move {
         ws::handle_ws_connection(socket, state.deps.clone()).await;
-    })
-}
-
-async fn peer_upgrade_handler(
-    ws: axum::extract::ws::WebSocketUpgrade,
-    State(state): State<Arc<AppState>>,
-) -> impl IntoResponse {
-    ws.on_upgrade(|socket| async move {
-        peer::handle_peer_ws(socket, state.deps.peers.clone()).await;
     })
 }
 

@@ -1,4 +1,3 @@
-use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::RwLock;
@@ -12,7 +11,6 @@ pub struct CacheService {
 }
 
 struct CacheInner {
-    remote_repos: HashMap<String, Vec<GitRepo>>,
     scanned_dirs: Vec<String>,
 }
 
@@ -22,7 +20,6 @@ impl CacheService {
             cache_path,
             config_path,
             inner: Arc::new(RwLock::new(CacheInner {
-                remote_repos: HashMap::new(),
                 scanned_dirs: Vec::new(),
             })),
         }
@@ -74,23 +71,7 @@ impl CacheService {
         }
     }
 
-    pub async fn set_remote_repos(&self, machine: &str, repos: Vec<GitRepo>) {
-        let mut inner = self.inner.write().await;
-        inner.remote_repos.insert(machine.to_string(), repos);
-    }
-
-    pub async fn clear_remote_repos(&self, machine: &str) {
-        let mut inner = self.inner.write().await;
-        inner.remote_repos.remove(machine);
-    }
-
     pub async fn get_all_repos(&self) -> Vec<GitRepo> {
-        let local = self.load().await;
-        let inner = self.inner.read().await;
-        let mut all = local;
-        for repos in inner.remote_repos.values() {
-            all.extend(repos.iter().cloned());
-        }
-        all
+        self.load().await
     }
 }

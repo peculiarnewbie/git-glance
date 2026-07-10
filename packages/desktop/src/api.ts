@@ -43,7 +43,6 @@ const BASE = ""
 let ws: WebSocket | null = null
 let pending = new Map<string, { resolve: (v: any) => void; reject: (e: any) => void }>()
 let subscriptions = new Map<string, Set<(data: any) => void>>()
-let machineHandlers = new Set<(machines: { name: string; online: boolean; lastSeen: number | null }[]) => void>()
 let reposUpdateHandlers = new Set<(repos: any[], agentId: string) => void>()
 let idCounter = 0
 
@@ -108,8 +107,6 @@ function connect(): Promise<void> {
           subscriptions.delete(id)
         } else if (type === "ack") {
           subscriptions.get(id)?.forEach(fn => fn({ type: "ack", agentId: msgData.agentId, action: msgData.action }))
-        } else if (type === "machines") {
-          machineHandlers.forEach(fn => fn(data?.machines ?? data))
         } else if (type === "repos_update") {
           reposUpdateHandlers.forEach(fn => fn(data?.repos ?? msgData.repos ?? data, data?.agentId ?? msgData.agentId))
         }
@@ -162,7 +159,7 @@ export interface RepoData {
   untracked: number; untrackedFiles: FileStatus[]
   ahead: number; behind: number; remote: string | null
   lastCommitTime: number | null; weekCommits: number; lastScanTime: number | null
-  error: string | null; machine: string
+  error: string | null
   settings: { skipUntracked: boolean; skipPullCheck: boolean; autoPullIfClean: boolean; hidden: boolean; pinned: boolean } | null
 }
 
@@ -177,7 +174,6 @@ export type RepoError = RepoData['error'];
 export interface RepoInfo {
   path: RepoPath;
   name: RepoName;
-  machine: RepoName;
   cached: boolean;
   status: {
     branch: RepoBranch;
@@ -204,13 +200,24 @@ export interface RepoInfo {
 
 export interface ReposResponse {
   repos: RepoData[]; scannedAt: number; scannedDirs: string[]
-  machines: { name: string; url: string; online: boolean; lastSeen: number | null }[]
+}
+
+export interface WorkspaceStatusResponse {
+  generatedAt: number; repos: RepoData[]; totalRepos: number; dirtyRepos: number
+  aheadRepos: number; behindRepos: number; erroredRepos: number; hiddenRepos: number
+}
+
+export interface RecentCommit {
+  hash: string; timestamp: number; author: string; subject: string
+}
+
+export interface RecentActivityResponse {
+  since: number; until: number
+  activities: { repo: RepoData; commits: RecentCommit[]; error?: string }[]
 }
 
 export interface ServerConfigResponse {
-  rootDir: string | null; opencodeModel: string; token?: string
-  excludedDirs?: string[]
-  machines: { name: string; url: string; token?: string; online: boolean }[]
+  rootDir: string | null; opencodeModel: string; excludedDirs?: string[]
 }
 
 export interface ProgressEvent {
@@ -231,16 +238,27 @@ export interface FetchEvent {
 export const api = {
   getRepos: (): Promise<ReposResponse> => send<ReposResponse>("getRepos"),
 
+  getWorkspaceStatus: (): Promise<WorkspaceStatusResponse> => send<WorkspaceStatusResponse>("getWorkspaceStatus"),
+
+  getRepoStatus: (repo: RepoPath, options?: { refresh?: boolean }): Promise<{ repo: RepoData; fresh: boolean }> =>
+    send("getRepoStatus", { repo, ...options }),
+
+  searchRepos: (options?: { query?: string; state?: "dirty" | "ahead" | "behind" | "error" | "clean"; includeHidden?: boolean; limit?: number }): Promise<{ repos: RepoData[] }> =>
+    send("searchRepos", options),
+
+  getRecentActivity: (options?: { since?: number; limitPerRepo?: number; includeHidden?: boolean }): Promise<RecentActivityResponse> =>
+    send("getRecentActivity", options),
+
   getConfig: (): Promise<ServerConfigResponse> => send<ServerConfigResponse>("getConfig"),
 
-  setConfig: (config: { rootDir?: string; opencodeModel?: string; excludedDirs?: string[]; machines?: { name: string; url: string; token?: string }[] }): Promise<void> =>
+  setConfig: (config: { rootDir?: string; opencodeModel?: string; excludedDirs?: string[] }): Promise<void> =>
     send("setConfig", config),
 
-  pullRepo: (repo: RepoPath, machine?: string): Promise<{ ok: boolean; output?: string; error?: string }> =>
-    send("pull", { repo, machine }),
+  pullRepo: (repo: RepoPath): Promise<{ ok: boolean; output?: string; error?: string }> =>
+    send("pull", { repo }),
 
-  pushRepo: (repo: RepoPath, machine?: string): Promise<{ ok: boolean; output?: string; error?: string }> =>
-    send("push", { repo, machine }),
+  pushRepo: (repo: RepoPath): Promise<{ ok: boolean; output?: string; error?: string }> =>
+    send("push", { repo }),
 
   updateRepoSettings: (repo: RepoPath, settings: { skipUntracked?: boolean; skipPullCheck?: boolean; autoPullIfClean?: boolean; hidden?: boolean; pinned?: boolean }): Promise<void> =>
     send("updateRepoSettings", { repo, ...settings }),
@@ -278,10 +296,10 @@ export const api = {
   checkPull: (repo: RepoPath): Promise<{ ok: boolean; repo?: RepoData; error?: string }> =>
     send("checkPull", { repo }),
 
-  getDiff: async (repo: string, file: string, status: "staged" | "unstaged" | "untracked"): Promise<{ file: string; diff: string }> => {
+  getDiff: async (repo: string, file: string, status: "staged" | "unstaged" | "untracked", maxBytes?: number): Promise<{ file: string; diff: string; truncated: boolean; returnedBytes: number; totalBytes: number }> => {
     logInfo("[diff] request", { repo, file, status })
     try {
-      const result = await send<{ file: string; diff: string }>("getDiff", { repo, file, status })
+      const result = await send<{ file: string; diff: string; truncated: boolean; returnedBytes: number; totalBytes: number }>("getDiff", { repo, file, status, maxBytes })
       logInfo("[diff] response", { repo, requestedFile: file, responseFile: result.file, status, bytes: result.diff.length, preview: result.diff.slice(0, 200) })
       return result
     } catch (e) {
@@ -297,22 +315,17 @@ export const api = {
       onEvent(data)
     }, "cancelFetch"),
 
-  onMachineStatus: (fn: (machines: { name: string; online: boolean; lastSeen: number | null }[]) => void) => {
-    machineHandlers.add(fn)
-    return () => machineHandlers.delete(fn)
-  },
-
   onReposUpdate: (fn: (repos: any[], agentId: string) => void) => {
     reposUpdateHandlers.add(fn)
     return () => reposUpdateHandlers.delete(fn)
   },
 
   // Effect wrappers for backward compat with App.tsx
-  pullRepoEffect: (repo: string, machine?: string) =>
-    ({ _tag: "effect", name: "pull", repo, machine } as any),
+  pullRepoEffect: (repo: string) =>
+    ({ _tag: "effect", name: "pull", repo } as any),
 
-  pushRepoEffect: (repo: string, machine?: string) =>
-    ({ _tag: "effect", name: "push", repo, machine } as any),
+  pushRepoEffect: (repo: string) =>
+    ({ _tag: "effect", name: "push", repo } as any),
 
   rescanRepoEffect: (repo: string) =>
     ({ _tag: "effect", name: "rescanRepo", repo } as any),
@@ -339,7 +352,7 @@ export function runUiEffect<A>(
 
 export function repoDataToInfo(r: RepoData): RepoInfo {
   return {
-    path: r.path, name: r.name, machine: r.machine, cached: false,
+    path: r.path, name: r.name, cached: false,
     skipUntracked: r.settings?.skipUntracked ?? false,
     skipPullCheck: r.settings?.skipPullCheck ?? false,
     autoPullIfClean: r.settings?.autoPullIfClean ?? false,
@@ -367,7 +380,7 @@ interface GitStatus {
 }
 
 export interface RepoInfo {
-  path: string; name: string; machine: string; cached: boolean
+  path: string; name: string; cached: boolean
   status: GitStatus
   skipUntracked?: boolean; skipPullCheck?: boolean; autoPullIfClean?: boolean; hidden?: boolean; pinned?: boolean
 }

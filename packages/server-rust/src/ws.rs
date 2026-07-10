@@ -1,7 +1,7 @@
 use axum::extract::ws::{Message as AxumMessage, WebSocket};
-use futures::{SinkExt, StreamExt};
+use futures::{stream, SinkExt, StreamExt};
 use serde_json::json;
-use std::path::PathBuf;
+use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::sync::mpsc;
@@ -9,15 +9,12 @@ use tokio::sync::mpsc;
 use crate::cache::CacheService;
 use crate::git::GitService;
 use crate::opencode;
-use crate::peer::PeerManager;
 use crate::scanner;
 use crate::types::*;
 
 pub struct ServerDeps {
     pub git: Arc<GitService>,
     pub cache: Arc<CacheService>,
-    pub peers: Arc<PeerManager>,
-    pub local_name: String,
 }
 
 fn now_millis() -> i64 {
@@ -70,6 +67,10 @@ async fn send_response(tx: &mpsc::Sender<String>, resp: WSResponse) {
 async fn handle_action(req: WSRequest, deps: Arc<ServerDeps>, tx: mpsc::Sender<String>) {
     match req.action.as_str() {
         "getRepos" => handle_get_repos(&req, &deps, &tx).await,
+        "getWorkspaceStatus" => handle_get_workspace_status(&req, &deps, &tx).await,
+        "getRepoStatus" => handle_get_repo_status(&req, &deps, &tx).await,
+        "searchRepos" => handle_search_repos(&req, &deps, &tx).await,
+        "getRecentActivity" => handle_get_recent_activity(&req, &deps, &tx).await,
         "getConfig" => handle_get_config(&req, &deps, &tx).await,
         "setConfig" => handle_set_config(&req, &deps, &tx).await,
         "pull" => handle_pull(&req, &deps, &tx).await,
@@ -103,28 +104,20 @@ async fn handle_action(req: WSRequest, deps: Arc<ServerDeps>, tx: mpsc::Sender<S
     }
 }
 
-async fn handle_get_repos(req: &WSRequest, deps: &ServerDeps, tx: &mpsc::Sender<String>) {
-    let all_repos = deps.cache.get_all_repos().await;
-    let all_repos: Vec<GitRepo> = all_repos
-        .into_iter()
-        .map(|mut r| {
-            if r.machine.is_empty() {
-                r.machine = deps.local_name.clone();
-            }
-            r
-        })
-        .collect();
-    let statuses = deps.peers.get_statuses().await;
-    let scanned_dirs = deps.cache.get_scanned_dirs().await;
+async fn cached_repos(deps: &ServerDeps) -> Vec<GitRepo> {
+    deps.cache.get_all_repos().await
+}
 
-    let now = now_millis();
-    let mut machines = vec![MachineStatus {
-        name: deps.local_name.clone(),
-        url: String::new(),
-        online: true,
-        last_seen: Some(now),
-    }];
-    machines.extend(statuses);
+async fn cached_repo_exists(deps: &ServerDeps, repo_path: &str) -> bool {
+    cached_repos(deps)
+        .await
+        .iter()
+        .any(|repo| repo.path == repo_path)
+}
+
+async fn handle_get_repos(req: &WSRequest, deps: &ServerDeps, tx: &mpsc::Sender<String>) {
+    let all_repos = cached_repos(deps).await;
+    let scanned_dirs = deps.cache.get_scanned_dirs().await;
 
     send_response(
         tx,
@@ -134,7 +127,211 @@ async fn handle_get_repos(req: &WSRequest, deps: &ServerDeps, tx: &mpsc::Sender<
                 repos: all_repos,
                 scanned_at: now_millis(),
                 scanned_dirs,
-                machines,
+            }),
+        ),
+    )
+    .await;
+}
+
+async fn handle_get_workspace_status(
+    req: &WSRequest,
+    deps: &ServerDeps,
+    tx: &mpsc::Sender<String>,
+) {
+    let repos = cached_repos(deps).await;
+    let response = WorkspaceStatusResponse {
+        generated_at: now_millis(),
+        total_repos: repos.len(),
+        dirty_repos: repos.iter().filter(|r| r.has_changes).count(),
+        ahead_repos: repos.iter().filter(|r| r.ahead > 0).count(),
+        behind_repos: repos.iter().filter(|r| r.behind > 0).count(),
+        errored_repos: repos.iter().filter(|r| r.error.is_some()).count(),
+        hidden_repos: repos
+            .iter()
+            .filter(|r| r.settings.as_ref().map_or(false, |s| s.hidden))
+            .count(),
+        repos,
+    };
+    send_response(tx, WSResponse::result(&req.id, json!(response))).await;
+}
+
+async fn handle_get_repo_status(req: &WSRequest, deps: &ServerDeps, tx: &mpsc::Sender<String>) {
+    let repo_path = req
+        .params
+        .get("repo")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+    let refresh = req
+        .params
+        .get("refresh")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    if repo_path.is_empty() {
+        send_response(
+            tx,
+            WSResponse::error(&req.id, r#"Missing "repo" parameter"#),
+        )
+        .await;
+        return;
+    }
+
+    let cached_repo = cached_repos(deps)
+        .await
+        .into_iter()
+        .find(|repo| repo.path == repo_path);
+    if cached_repo.is_none() {
+        send_response(
+            tx,
+            WSResponse::error(&req.id, "Repository not found in the workspace cache"),
+        )
+        .await;
+        return;
+    }
+    let refreshed = if refresh {
+        update_repo_in_cache(deps, repo_path).await.is_some()
+    } else {
+        false
+    };
+
+    let repo = if refreshed {
+        cached_repos(deps)
+            .await
+            .into_iter()
+            .find(|repo| repo.path == repo_path)
+    } else {
+        cached_repo
+    };
+    match repo {
+        Some(repo) => {
+            send_response(
+                tx,
+                WSResponse::result(&req.id, json!({ "repo": repo, "fresh": refreshed })),
+            )
+            .await
+        }
+        None => {
+            send_response(
+                tx,
+                WSResponse::error(&req.id, "Repository not found in the workspace cache"),
+            )
+            .await
+        }
+    }
+}
+
+async fn handle_search_repos(req: &WSRequest, deps: &ServerDeps, tx: &mpsc::Sender<String>) {
+    let query = req
+        .params
+        .get("query")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_lowercase();
+    let state = req.params.get("state").and_then(|v| v.as_str());
+    let include_hidden = req
+        .params
+        .get("includeHidden")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    let limit = req
+        .params
+        .get("limit")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(100)
+        .clamp(1, 1_000) as usize;
+
+    let repos: Vec<GitRepo> = cached_repos(deps)
+        .await
+        .into_iter()
+        .filter(|repo| {
+            include_hidden
+                || !repo
+                    .settings
+                    .as_ref()
+                    .map_or(false, |settings| settings.hidden)
+        })
+        .filter(|repo| match state {
+            Some("dirty") => repo.has_changes,
+            Some("ahead") => repo.ahead > 0,
+            Some("behind") => repo.behind > 0,
+            Some("error") => repo.error.is_some(),
+            Some("clean") => {
+                !repo.has_changes && repo.ahead == 0 && repo.behind == 0 && repo.error.is_none()
+            }
+            _ => true,
+        })
+        .filter(|repo| {
+            query.is_empty()
+                || [
+                    repo.name.as_str(),
+                    repo.path.as_str(),
+                    repo.branch.as_deref().unwrap_or(""),
+                    repo.remote.as_deref().unwrap_or(""),
+                ]
+                .iter()
+                .any(|field| field.to_lowercase().contains(&query))
+        })
+        .take(limit)
+        .collect();
+    send_response(tx, WSResponse::result(&req.id, json!({ "repos": repos }))).await;
+}
+
+async fn handle_get_recent_activity(req: &WSRequest, deps: &ServerDeps, tx: &mpsc::Sender<String>) {
+    let now = now_millis() / 1000;
+    let since = req
+        .params
+        .get("since")
+        .and_then(|v| v.as_i64())
+        .unwrap_or(now - 24 * 60 * 60);
+    let limit_per_repo = req
+        .params
+        .get("limitPerRepo")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(20)
+        .clamp(1, 100) as usize;
+    let include_hidden = req
+        .params
+        .get("includeHidden")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    let repos: Vec<GitRepo> = cached_repos(deps)
+        .await
+        .into_iter()
+        .filter(|repo| include_hidden || !repo.settings.as_ref().map_or(false, |s| s.hidden))
+        .collect();
+
+    let git = deps.git.clone();
+    let activities = stream::iter(repos.into_iter().map(|repo| {
+        let git = git.clone();
+        async move {
+            let result = git
+                .recent_commits_with_lock(&repo.path, since, limit_per_repo)
+                .await;
+            match result {
+                Ok(commits) => RepoActivity {
+                    repo,
+                    commits,
+                    error: None,
+                },
+                Err(error) => RepoActivity {
+                    repo,
+                    commits: Vec::new(),
+                    error: Some(error.to_string()),
+                },
+            }
+        }
+    }))
+    .buffer_unordered(4)
+    .collect::<Vec<_>>()
+    .await;
+
+    send_response(
+        tx,
+        WSResponse::result(
+            &req.id,
+            json!(RecentActivityResponse {
+                since,
+                until: now,
+                activities,
             }),
         ),
     )
@@ -143,7 +340,6 @@ async fn handle_get_repos(req: &WSRequest, deps: &ServerDeps, tx: &mpsc::Sender<
 
 async fn handle_get_config(req: &WSRequest, deps: &ServerDeps, tx: &mpsc::Sender<String>) {
     let cfg = deps.cache.load_config().await;
-    let statuses = deps.peers.get_statuses().await;
 
     let root_dir = if cfg.root_dir.is_empty() {
         None
@@ -157,27 +353,6 @@ async fn handle_get_config(req: &WSRequest, deps: &ServerDeps, tx: &mpsc::Sender
         cfg.opencode_model.clone()
     };
 
-    let now = now_millis();
-    let mut machines_with_online = vec![MachineStatus {
-        name: deps.local_name.clone(),
-        url: String::new(),
-        online: true,
-        last_seen: Some(now),
-    }];
-
-    for m in &cfg.machines {
-        if m.name == deps.local_name {
-            continue;
-        }
-        let online = statuses.iter().any(|s| s.name == m.name && s.online);
-        machines_with_online.push(MachineStatus {
-            name: m.name.clone(),
-            url: m.url.clone(),
-            online,
-            last_seen: None,
-        });
-    }
-
     send_response(
         tx,
         WSResponse::result(
@@ -185,9 +360,7 @@ async fn handle_get_config(req: &WSRequest, deps: &ServerDeps, tx: &mpsc::Sender
             json!({
                 "rootDir": root_dir,
                 "opencodeModel": model,
-                "token": cfg.token,
                 "excludedDirs": cfg.excluded_dirs,
-                "machines": machines_with_online,
             }),
         ),
     )
@@ -205,27 +378,6 @@ async fn handle_set_config(req: &WSRequest, deps: &ServerDeps, tx: &mpsc::Sender
     if let Some(v) = params.get("opencodeModel").and_then(|v| v.as_str()) {
         existing.opencode_model = v.to_string();
     }
-    if let Some(machines) = params.get("machines").and_then(|v| v.as_array()) {
-        let cfg_machines: Vec<ServerConfigMachine> = machines
-            .iter()
-            .filter_map(|m| {
-                let name = m.get("name")?.as_str()?;
-                let url = m.get("url")?.as_str()?;
-                let token = m.get("token").and_then(|t| t.as_str()).unwrap_or("");
-                if !name.is_empty() && !url.is_empty() {
-                    Some(ServerConfigMachine {
-                        name: name.to_string(),
-                        url: url.to_string(),
-                        token: token.to_string(),
-                    })
-                } else {
-                    None
-                }
-            })
-            .collect();
-        existing.machines = cfg_machines;
-        deps.peers.update_config(&existing).await;
-    }
     if let Some(arr) = params.get("excludedDirs").and_then(|v| v.as_array()) {
         existing.excluded_dirs = arr
             .iter()
@@ -241,7 +393,6 @@ async fn handle_set_config(req: &WSRequest, deps: &ServerDeps, tx: &mpsc::Sender
 async fn handle_pull(req: &WSRequest, deps: &ServerDeps, tx: &mpsc::Sender<String>) {
     let params = &req.params;
     let repo = params.get("repo").and_then(|v| v.as_str()).unwrap_or("");
-    let machine = params.get("machine").and_then(|v| v.as_str()).unwrap_or("");
 
     if repo.is_empty() {
         send_response(
@@ -252,21 +403,12 @@ async fn handle_pull(req: &WSRequest, deps: &ServerDeps, tx: &mpsc::Sender<Strin
         return;
     }
 
-    let machine = if machine.is_empty() || machine == deps.local_name {
-        deps.local_name.clone()
-    } else {
-        machine.to_string()
-    };
-
-    if machine != deps.local_name {
-        match deps.peers.proxy_pull(&machine, repo).await {
-            Ok(result) => {
-                send_response(tx, WSResponse::result(&req.id, json!(result))).await;
-            }
-            Err(e) => {
-                send_response(tx, WSResponse::error(&req.id, &e)).await;
-            }
-        }
+    if !cached_repo_exists(deps, repo).await {
+        send_response(
+            tx,
+            WSResponse::error(&req.id, "Repository not found in the workspace cache"),
+        )
+        .await;
         return;
     }
 
@@ -310,7 +452,6 @@ async fn handle_pull(req: &WSRequest, deps: &ServerDeps, tx: &mpsc::Sender<Strin
 async fn handle_push(req: &WSRequest, deps: &ServerDeps, tx: &mpsc::Sender<String>) {
     let params = &req.params;
     let repo = params.get("repo").and_then(|v| v.as_str()).unwrap_or("");
-    let machine = params.get("machine").and_then(|v| v.as_str()).unwrap_or("");
 
     if repo.is_empty() {
         send_response(
@@ -321,21 +462,12 @@ async fn handle_push(req: &WSRequest, deps: &ServerDeps, tx: &mpsc::Sender<Strin
         return;
     }
 
-    let machine = if machine.is_empty() || machine == deps.local_name {
-        deps.local_name.clone()
-    } else {
-        machine.to_string()
-    };
-
-    if machine != deps.local_name {
-        match deps.peers.proxy_push(&machine, repo).await {
-            Ok(result) => {
-                send_response(tx, WSResponse::result(&req.id, json!(result))).await;
-            }
-            Err(e) => {
-                send_response(tx, WSResponse::error(&req.id, &e)).await;
-            }
-        }
+    if !cached_repo_exists(deps, repo).await {
+        send_response(
+            tx,
+            WSResponse::error(&req.id, "Repository not found in the workspace cache"),
+        )
+        .await;
         return;
     }
 
@@ -389,6 +521,15 @@ async fn handle_rescan_repo(req: &WSRequest, deps: &ServerDeps, tx: &mpsc::Sende
         return;
     }
 
+    if !cached_repo_exists(deps, repo).await {
+        send_response(
+            tx,
+            WSResponse::error(&req.id, "Repository not found in the local workspace cache"),
+        )
+        .await;
+        return;
+    }
+
     match update_repo_in_cache(deps, repo).await {
         Some(updated) => {
             send_response(
@@ -429,6 +570,15 @@ async fn handle_check_pull(req: &WSRequest, deps: &ServerDeps, tx: &mpsc::Sender
         send_response(
             tx,
             WSResponse::error(&req.id, r#"Missing "repo" parameter"#),
+        )
+        .await;
+        return;
+    }
+
+    if !cached_repo_exists(deps, repo).await {
+        send_response(
+            tx,
+            WSResponse::error(&req.id, "Repository not found in the local workspace cache"),
         )
         .await;
         return;
@@ -570,11 +720,10 @@ async fn handle_scan(req: &WSRequest, deps: &ServerDeps, tx: &mpsc::Sender<Strin
     let (progress_tx, mut progress_rx) = mpsc::channel(100);
     let git = deps.git.clone();
     let cache = deps.cache.clone();
-    let machine = deps.local_name.clone();
     let root = root_dir.to_string();
 
     tokio::spawn(async move {
-        scanner::scan_all(git, cache, root, excluded_dirs, machine, progress_tx).await;
+        scanner::scan_all(git, cache, root, excluded_dirs, progress_tx).await;
     });
 
     while let Some(p) = progress_rx.recv().await {
@@ -588,7 +737,6 @@ async fn handle_scan(req: &WSRequest, deps: &ServerDeps, tx: &mpsc::Sender<Strin
             return;
         }
     }
-    deps.peers.notify_repos_updated().await;
     send_response(tx, WSResponse::done(&req.id)).await;
 }
 
@@ -615,11 +763,10 @@ async fn handle_scan_only(req: &WSRequest, deps: &ServerDeps, tx: &mpsc::Sender<
     let (progress_tx, mut progress_rx) = mpsc::channel(100);
     let git = deps.git.clone();
     let cache = deps.cache.clone();
-    let machine = deps.local_name.clone();
     let root = root_dir.to_string();
 
     tokio::spawn(async move {
-        scanner::scan_only(git, cache, root, excluded_dirs, machine, progress_tx).await;
+        scanner::scan_only(git, cache, root, excluded_dirs, progress_tx).await;
     });
 
     while let Some(p) = progress_rx.recv().await {
@@ -633,7 +780,6 @@ async fn handle_scan_only(req: &WSRequest, deps: &ServerDeps, tx: &mpsc::Sender<
             return;
         }
     }
-    deps.peers.notify_repos_updated().await;
     send_response(tx, WSResponse::done(&req.id)).await;
 }
 
@@ -645,6 +791,15 @@ async fn handle_commit_push(req: &WSRequest, deps: &ServerDeps, tx: &mpsc::Sende
         send_response(
             tx,
             WSResponse::error(&req.id, r#"Missing "repo" parameter"#),
+        )
+        .await;
+        return;
+    }
+
+    if !cached_repo_exists(deps, repo).await {
+        send_response(
+            tx,
+            WSResponse::error(&req.id, "Repository not found in the local workspace cache"),
         )
         .await;
         return;
@@ -1051,7 +1206,6 @@ async fn handle_fetch_all(req: &WSRequest, deps: &ServerDeps, tx: &mpsc::Sender<
 
     if changed {
         deps.cache.save(&cached_repos).await;
-        deps.peers.notify_repos_updated().await;
     }
 
     send_response(
@@ -1102,6 +1256,11 @@ async fn handle_get_diff(req: &WSRequest, deps: &ServerDeps, tx: &mpsc::Sender<S
     let repo = params.get("repo").and_then(|v| v.as_str()).unwrap_or("");
     let file = params.get("file").and_then(|v| v.as_str()).unwrap_or("");
     let status_type = params.get("status").and_then(|v| v.as_str()).unwrap_or("");
+    let max_bytes = params
+        .get("maxBytes")
+        .and_then(|value| value.as_u64())
+        .unwrap_or(256 * 1024)
+        .clamp(1_024, 1024 * 1024) as usize;
 
     if repo.is_empty() || file.is_empty() {
         send_response(
@@ -1111,6 +1270,33 @@ async fn handle_get_diff(req: &WSRequest, deps: &ServerDeps, tx: &mpsc::Sender<S
         .await;
         return;
     }
+
+    let cached_repo = cached_repos(deps)
+        .await
+        .into_iter()
+        .find(|cached| cached.path == repo);
+    if cached_repo.is_none() {
+        send_response(
+            tx,
+            WSResponse::error(&req.id, "Repository not found in the local workspace cache"),
+        )
+        .await;
+        return;
+    }
+    let relative_file = match normalized_relative_path(file) {
+        Some(path) => path,
+        None => {
+            send_response(
+                tx,
+                WSResponse::error(
+                    &req.id,
+                    "File must be a normalized relative path inside the repository",
+                ),
+            )
+            .await;
+            return;
+        }
+    };
 
     println!(
         "[diff] request repo={:?} file={:?} status={:?}",
@@ -1133,8 +1319,44 @@ async fn handle_get_diff(req: &WSRequest, deps: &ServerDeps, tx: &mpsc::Sender<S
             .await
             .map_err(|e| e.to_string()),
         "untracked" => {
-            let path = std::path::Path::new(repo).join(file);
-            match tokio::fs::read_to_string(&path).await {
+            let repo_root = match tokio::fs::canonicalize(repo).await {
+                Ok(path) => path,
+                Err(error) => {
+                    send_response(
+                        tx,
+                        WSResponse::error(
+                            &req.id,
+                            &format!("Cannot resolve repository path: {error}"),
+                        ),
+                    )
+                    .await;
+                    return;
+                }
+            };
+            let path = repo_root.join(&relative_file);
+            let resolved = match tokio::fs::canonicalize(&path).await {
+                Ok(path) if path.starts_with(&repo_root) => path,
+                Ok(_) => {
+                    send_response(
+                        tx,
+                        WSResponse::error(&req.id, "File resolves outside the repository"),
+                    )
+                    .await;
+                    return;
+                }
+                Err(error) => {
+                    send_response(
+                        tx,
+                        WSResponse::error(
+                            &req.id,
+                            &format!("Cannot resolve untracked file: {error}"),
+                        ),
+                    )
+                    .await;
+                    return;
+                }
+            };
+            match tokio::fs::read_to_string(&resolved).await {
                 Ok(content) => {
                     let lines: Vec<&str> = content.lines().collect();
                     let mut diff = format!(
@@ -1183,6 +1405,9 @@ async fn handle_get_diff(req: &WSRequest, deps: &ServerDeps, tx: &mpsc::Sender<S
                 .await;
                 return;
             }
+            let total_bytes = diff.len();
+            let truncated = total_bytes > max_bytes;
+            let diff = truncate_utf8(diff, max_bytes);
             println!(
                 "[diff] response repo={:?} file={:?} status={:?} bytes={}",
                 repo,
@@ -1192,7 +1417,16 @@ async fn handle_get_diff(req: &WSRequest, deps: &ServerDeps, tx: &mpsc::Sender<S
             );
             send_response(
                 tx,
-                WSResponse::result(&req.id, json!({"file": file, "diff": diff})),
+                WSResponse::result(
+                    &req.id,
+                    json!({
+                        "file": file,
+                        "diff": diff,
+                        "truncated": truncated,
+                        "returnedBytes": diff.len(),
+                        "totalBytes": total_bytes,
+                    }),
+                ),
             )
             .await;
         }
@@ -1207,6 +1441,59 @@ async fn handle_get_diff(req: &WSRequest, deps: &ServerDeps, tx: &mpsc::Sender<S
             )
             .await;
         }
+    }
+}
+
+fn normalized_relative_path(path: &str) -> Option<PathBuf> {
+    let path = Path::new(path);
+    if path.as_os_str().is_empty() || path.is_absolute() {
+        return None;
+    }
+    let mut normalized = PathBuf::new();
+    for component in path.components() {
+        match component {
+            Component::Normal(part) => normalized.push(part),
+            _ => return None,
+        }
+    }
+    (!normalized.as_os_str().is_empty()).then_some(normalized)
+}
+
+fn truncate_utf8(mut value: String, max_bytes: usize) -> String {
+    if value.len() <= max_bytes {
+        return value;
+    }
+    let mut boundary = max_bytes;
+    while !value.is_char_boundary(boundary) {
+        boundary -= 1;
+    }
+    value.truncate(boundary);
+    value
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{normalized_relative_path, truncate_utf8};
+    use std::path::PathBuf;
+
+    #[test]
+    fn accepts_only_normalized_relative_paths() {
+        assert_eq!(
+            normalized_relative_path("src/main.rs"),
+            Some(PathBuf::from("src/main.rs"))
+        );
+        assert!(normalized_relative_path("").is_none());
+        assert!(normalized_relative_path("/etc/passwd").is_none());
+        assert!(normalized_relative_path("../secret").is_none());
+        assert!(normalized_relative_path("src/../secret").is_none());
+        assert!(normalized_relative_path("./src/main.rs").is_none());
+    }
+
+    #[test]
+    fn truncates_at_a_utf8_boundary() {
+        assert_eq!(truncate_utf8("abc".to_string(), 3), "abc");
+        assert_eq!(truncate_utf8("aéz".to_string(), 2), "a");
+        assert_eq!(truncate_utf8("aéz".to_string(), 3), "aé");
     }
 }
 
@@ -1238,7 +1525,6 @@ async fn update_repo_in_cache(deps: &ServerDeps, repo_path: &str) -> Option<GitR
         last_commit_time: Some(commit_time_ms),
         week_commits: status.week_commits,
         last_scan_time: Some(now_millis()),
-        machine: deps.local_name.clone(),
         error: None,
         settings: None,
     };
@@ -1264,7 +1550,6 @@ async fn update_repo_in_cache(deps: &ServerDeps, repo_path: &str) -> Option<GitR
     }
 
     deps.cache.save(&new_repos).await;
-    deps.peers.notify_repos_updated().await;
 
     Some(updated)
 }

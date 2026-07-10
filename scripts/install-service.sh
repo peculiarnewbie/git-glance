@@ -3,7 +3,7 @@ set -euo pipefail
 
 REPO_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 BIN="$REPO_DIR/dist/git-glance-serve"
-STATIC="$REPO_DIR/packages/desktop/dist"
+STATIC="$REPO_DIR/packages/desktop/renderer-dist"
 SERVICE_FILE="/etc/systemd/system/git-glance.service"
 HOSTNAME_ENTRY="127.0.0.1 git-glance.local"
 

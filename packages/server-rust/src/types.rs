@@ -56,22 +56,8 @@ pub struct GitRepo {
     pub last_scan_time: Option<i64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
-    #[serde(default)]
-    pub machine: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub settings: Option<GitRepoSettings>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct MachineStatus {
-    pub name: String,
-    #[serde(default)]
-    pub url: String,
-    #[serde(default)]
-    pub online: bool,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub last_seen: Option<i64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -82,8 +68,6 @@ pub struct ServerConfig {
     pub root_dir: Option<String>,
     #[serde(default = "default_model")]
     pub opencode_model: String,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub machines: Vec<ServerConfigMachine>,
 }
 
 fn default_model() -> String {
@@ -92,20 +76,51 @@ fn default_model() -> String {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct ServerConfigMachine {
-    pub name: String,
-    pub url: String,
-    #[serde(default, skip_serializing_if = "String::is_empty")]
-    pub token: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
 pub struct ReposResponse {
     pub repos: Vec<GitRepo>,
     pub scanned_at: i64,
     pub scanned_dirs: Vec<String>,
-    pub machines: Vec<MachineStatus>,
+}
+
+/// A deterministic view of the cached workspace state.  This is intentionally
+/// facts-only so API consumers can apply their own ranking or summarisation.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkspaceStatusResponse {
+    pub generated_at: i64,
+    pub repos: Vec<GitRepo>,
+    pub total_repos: usize,
+    pub dirty_repos: usize,
+    pub ahead_repos: usize,
+    pub behind_repos: usize,
+    pub errored_repos: usize,
+    pub hidden_repos: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RecentCommit {
+    pub hash: String,
+    pub timestamp: i64,
+    pub author: String,
+    pub subject: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RepoActivity {
+    pub repo: GitRepo,
+    pub commits: Vec<RecentCommit>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RecentActivityResponse {
+    pub since: i64,
+    pub until: i64,
+    pub activities: Vec<RepoActivity>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -185,10 +200,6 @@ pub struct PersistedConfig {
     pub root_dir: String,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub opencode_model: String,
-    #[serde(default, skip_serializing_if = "String::is_empty")]
-    pub token: String,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub machines: Vec<ServerConfigMachine>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub excluded_dirs: Vec<String>,
 }
@@ -208,16 +219,6 @@ pub struct GitStatusResult {
     pub behind: i64,
     pub last_commit_time: Option<i64>,
     pub week_commits: i64,
-}
-
-#[derive(Debug, Clone)]
-#[allow(dead_code)]
-pub struct MachineState {
-    pub name: String,
-    pub url: String,
-    pub token: String,
-    pub online: bool,
-    pub last_seen: Option<i64>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -276,31 +277,4 @@ impl WSResponse {
             error: String::new(),
         }
     }
-}
-
-// ─── Inter-machine peer protocol ──────────────────────────────────────
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct PeerEnvelope {
-    #[serde(rename = "type")]
-    pub envelope_type: String,
-    #[serde(default, skip_serializing_if = "String::is_empty")]
-    pub id: String,
-    #[serde(default, skip_serializing_if = "String::is_empty")]
-    pub token: String,
-    #[serde(default, skip_serializing_if = "String::is_empty")]
-    pub action: String,
-    #[serde(default, skip_serializing_if = "String::is_empty")]
-    pub event: String,
-    #[serde(default)]
-    pub ok: bool,
-    #[serde(default, skip_serializing_if = "String::is_empty")]
-    pub error: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub payload: Option<serde_json::Value>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct PeerPullPushPayload {
-    pub path: String,
 }

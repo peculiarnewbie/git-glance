@@ -146,7 +146,7 @@ fn now_millis() -> i64 {
         .as_millis() as i64
 }
 
-async fn scan_one_repo(git: &GitService, repo_path: &str, machine: &str) -> GitRepo {
+async fn scan_one_repo(git: &GitService, repo_path: &str) -> GitRepo {
     let name = Path::new(repo_path)
         .file_name()
         .unwrap_or_default()
@@ -173,7 +173,6 @@ async fn scan_one_repo(git: &GitService, repo_path: &str, machine: &str) -> GitR
                 last_commit_time: Some(commit_time_ms),
                 week_commits: status.week_commits,
                 last_scan_time: Some(now_millis()),
-                machine: machine.to_string(),
                 error: None,
                 settings: None,
             }
@@ -195,7 +194,6 @@ async fn scan_one_repo(git: &GitService, repo_path: &str, machine: &str) -> GitR
             last_commit_time: None,
             week_commits: 0,
             last_scan_time: None,
-            machine: machine.to_string(),
             error: Some(e.to_string()),
             settings: None,
         },
@@ -225,7 +223,6 @@ pub async fn scan_all(
     cache: Arc<CacheService>,
     root_dir: String,
     excluded_dirs: Vec<String>,
-    machine: String,
     progress_tx: mpsc::Sender<ScanProgress>,
 ) {
     log_rss("scan_all start");
@@ -285,42 +282,38 @@ pub async fn scan_all(
     for (i, path) in repo_paths.iter().enumerate() {
         let git = git.clone();
         let path = path.clone();
-        let machine = machine.clone();
         let sem = sem.clone();
         let settings_map = Arc::clone(&settings_map);
 
         tasks.spawn(async move {
             let _permit = sem.acquire().await.unwrap();
-            let mut repo = tokio::time::timeout(
-                Duration::from_secs(30),
-                scan_one_repo(&git, &path, &machine),
-            )
-            .await
-            .unwrap_or_else(|_| GitRepo {
-                name: Path::new(&path)
-                    .file_name()
-                    .unwrap_or_default()
-                    .to_string_lossy()
-                    .to_string(),
-                path: path.clone(),
-                branch: None,
-                has_changes: false,
-                staged: 0,
-                staged_files: Vec::new(),
-                unstaged: 0,
-                unstaged_files: Vec::new(),
-                untracked: 0,
-                untracked_files: Vec::new(),
-                ahead: 0,
-                behind: 0,
-                remote: None,
-                last_commit_time: None,
-                week_commits: 0,
-                last_scan_time: None,
-                machine: machine.clone(),
-                error: Some("scan timed out".to_string()),
-                settings: None,
-            });
+            let mut repo =
+                tokio::time::timeout(Duration::from_secs(30), scan_one_repo(&git, &path))
+                    .await
+                    .unwrap_or_else(|_| GitRepo {
+                        name: Path::new(&path)
+                            .file_name()
+                            .unwrap_or_default()
+                            .to_string_lossy()
+                            .to_string(),
+                        path: path.clone(),
+                        branch: None,
+                        has_changes: false,
+                        staged: 0,
+                        staged_files: Vec::new(),
+                        unstaged: 0,
+                        unstaged_files: Vec::new(),
+                        untracked: 0,
+                        untracked_files: Vec::new(),
+                        ahead: 0,
+                        behind: 0,
+                        remote: None,
+                        last_commit_time: None,
+                        week_commits: 0,
+                        last_scan_time: None,
+                        error: Some("scan timed out".to_string()),
+                        settings: None,
+                    });
             merge_settings(&mut repo, &settings_map);
             (i, repo)
         });
@@ -444,7 +437,6 @@ pub async fn scan_all(
                     last_commit_time: Some(commit_time_ms),
                     week_commits: status.week_commits,
                     last_scan_time: Some(now_millis()),
-                    machine: repo.machine,
                     error: None,
                     settings: repo.settings,
                 }
@@ -477,7 +469,6 @@ pub async fn scan_all(
                         last_commit_time: Some(commit_time_ms),
                         week_commits: status.week_commits,
                         last_scan_time: Some(now_millis()),
-                        machine: updated.machine,
                         error: None,
                         settings: updated.settings,
                     };
@@ -534,7 +525,6 @@ pub async fn scan_only(
     cache: Arc<CacheService>,
     root_dir: String,
     excluded_dirs: Vec<String>,
-    machine: String,
     progress_tx: mpsc::Sender<ScanProgress>,
 ) {
     log_rss("scan_only start");
@@ -590,42 +580,38 @@ pub async fn scan_only(
     for (i, path) in repo_paths.iter().enumerate() {
         let git = git.clone();
         let path = path.clone();
-        let machine = machine.clone();
         let sem = sem.clone();
         let settings_map = Arc::clone(&settings_map);
 
         tasks.spawn(async move {
             let _permit = sem.acquire().await.unwrap();
-            let mut repo = tokio::time::timeout(
-                Duration::from_secs(30),
-                scan_one_repo(&git, &path, &machine),
-            )
-            .await
-            .unwrap_or_else(|_| GitRepo {
-                name: Path::new(&path)
-                    .file_name()
-                    .unwrap_or_default()
-                    .to_string_lossy()
-                    .to_string(),
-                path: path.clone(),
-                branch: None,
-                has_changes: false,
-                staged: 0,
-                staged_files: Vec::new(),
-                unstaged: 0,
-                unstaged_files: Vec::new(),
-                untracked: 0,
-                untracked_files: Vec::new(),
-                ahead: 0,
-                behind: 0,
-                remote: None,
-                last_commit_time: None,
-                week_commits: 0,
-                last_scan_time: None,
-                machine: machine.clone(),
-                error: Some("scan timed out".to_string()),
-                settings: None,
-            });
+            let mut repo =
+                tokio::time::timeout(Duration::from_secs(30), scan_one_repo(&git, &path))
+                    .await
+                    .unwrap_or_else(|_| GitRepo {
+                        name: Path::new(&path)
+                            .file_name()
+                            .unwrap_or_default()
+                            .to_string_lossy()
+                            .to_string(),
+                        path: path.clone(),
+                        branch: None,
+                        has_changes: false,
+                        staged: 0,
+                        staged_files: Vec::new(),
+                        unstaged: 0,
+                        unstaged_files: Vec::new(),
+                        untracked: 0,
+                        untracked_files: Vec::new(),
+                        ahead: 0,
+                        behind: 0,
+                        remote: None,
+                        last_commit_time: None,
+                        week_commits: 0,
+                        last_scan_time: None,
+                        error: Some("scan timed out".to_string()),
+                        settings: None,
+                    });
             merge_settings(&mut repo, &settings_map);
             (i, repo)
         });

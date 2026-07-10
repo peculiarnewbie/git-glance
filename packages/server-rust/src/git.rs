@@ -4,7 +4,7 @@ use std::time::Duration;
 use tokio::process::Command;
 use tokio::sync::Mutex;
 
-use crate::types::{FileStatus, GitStatusResult};
+use crate::types::{FileStatus, GitStatusResult, RecentCommit};
 
 #[derive(Debug)]
 pub struct GitCommandError {
@@ -355,6 +355,36 @@ impl GitService {
         let lock = self.get_lock(repo_path).await;
         let _guard = lock.lock().await;
         self.get_status(repo_path).await
+    }
+
+    pub async fn recent_commits_with_lock(
+        &self,
+        repo_path: &str,
+        since_seconds: i64,
+        limit: usize,
+    ) -> Result<Vec<RecentCommit>, GitCommandError> {
+        let since = format!("--since=@{}", since_seconds.max(0));
+        let max_count = format!("--max-count={}", limit.clamp(1, 100));
+        let output = self
+            .run_args_with_lock(
+                &["log", &since, &max_count, "--format=%H%x1f%ct%x1f%an%x1f%s"],
+                repo_path,
+                Duration::from_secs(15),
+            )
+            .await?;
+
+        Ok(output
+            .lines()
+            .filter_map(|line| {
+                let mut fields = line.split('\x1f');
+                Some(RecentCommit {
+                    hash: fields.next()?.to_string(),
+                    timestamp: fields.next()?.parse().ok()?,
+                    author: fields.next()?.to_string(),
+                    subject: fields.next()?.to_string(),
+                })
+            })
+            .collect())
     }
 }
 

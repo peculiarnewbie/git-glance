@@ -39,14 +39,14 @@ function fileStatusColor(fs: FileStatus): string {
   }
 }
 
-function PullButton(props: { repoPath: RepoPathType; repoName: RepoNameType; behind: number; machine?: string; onRefresh: (repoPath: string) => Promise<void>; }) {
+function PullButton(props: { repoPath: RepoPathType; repoName: RepoNameType; behind: number; onRefresh: (repoPath: string) => Promise<void>; }) {
   const [busy, setBusy] = createSignal(false);
   const [msg, setMsg] = createSignal<string | null>(null);
   function pull() {
     if (busy()) return;
     setBusy(true);
     setMsg(null);
-    runUiEffect(api.pullRepoEffect(props.repoPath, props.machine), {
+    runUiEffect(api.pullRepoEffect(props.repoPath), {
       onSuccess: async (result) => {
         if (result.ok) await props.onRefresh(props.repoPath);
         setMsg(result.ok ? "Pulled" : `Failed: ${result.error ?? "unknown"}`);
@@ -70,14 +70,14 @@ function PullButton(props: { repoPath: RepoPathType; repoName: RepoNameType; beh
   );
 }
 
-function PushButton(props: { repoPath: RepoPathType; repoName: RepoNameType; ahead: number; machine?: string; onRefresh: (repoPath: string) => Promise<void>; }) {
+function PushButton(props: { repoPath: RepoPathType; repoName: RepoNameType; ahead: number; onRefresh: (repoPath: string) => Promise<void>; }) {
   const [busy, setBusy] = createSignal(false);
   const [msg, setMsg] = createSignal<string | null>(null);
   function push() {
     if (busy()) return;
     setBusy(true);
     setMsg(null);
-    runUiEffect(api.pushRepoEffect(props.repoPath, props.machine), {
+    runUiEffect(api.pushRepoEffect(props.repoPath), {
       onSuccess: async (result) => {
         if (result.ok) await props.onRefresh(props.repoPath);
         setMsg(result.ok ? "Pushed" : `Failed: ${result.error ?? "unknown"}`);
@@ -152,7 +152,7 @@ export default function App() {
   const [collapsed, setCollapsed] = createSignal<Set<string>>(new Set(["Hidden"]));
 
   const [loading, setLoading] = createSignal(true);
-  const [config, setConfig] = createSignal<{ opencodeModel: string; token?: string; excludedDirs?: string[]; machines?: { name: string; url: string; token?: string }[] }>({ opencodeModel: "CrofAI/deepseek-v4-flash" });
+  const [config, setConfig] = createSignal<{ opencodeModel: string; excludedDirs?: string[] }>({ opencodeModel: "CrofAI/deepseek-v4-flash" });
   const [showSettings, setShowSettings] = createSignal(false);
   const [modelDraft, setModelDraft] = createSignal("");
   const [excludeDraft, setExcludeDraft] = createSignal("");
@@ -167,12 +167,7 @@ export default function App() {
   // Derive types from schema of truth
   type FetchPhaseType = import("./api").FetchEvent['phase'];
   type FetchErrorType = import("./api").FetchEvent['error'];
-  const [machineFilter, setMachineFilter] = createSignal<string | null>(null);
   const [search, setSearch] = createSignal("");
-  const [machines, setMachines] = createSignal<{ name: string; url: string; online: boolean }[]>([]);
-  const [machineNameDraft, setMachineNameDraft] = createSignal("");
-  const [machineUrlDraft, setMachineUrlDraft] = createSignal("");
-  const [machineTokenDraft, setMachineTokenDraft] = createSignal("");
   const [showDirModal, setShowDirModal] = createSignal(false);
   const [dirInputValue, setDirInputValue] = createSignal("");
   const [dirInputError, setDirInputError] = createSignal<string | null>(null);
@@ -270,14 +265,12 @@ export default function App() {
 
     const cfg = await api.getConfig();
     if (cfg) {
-      setConfig({ opencodeModel: cfg.opencodeModel, token: (cfg as any).token, excludedDirs: cfg.excludedDirs ?? [], machines: cfg.machines?.map(m => ({ name: m.name, url: m.url, token: m.token })) });
-      setMachines((cfg.machines || []).map(m => ({ name: m.name, url: m.url, online: m.online })));
+      setConfig({ opencodeModel: cfg.opencodeModel, excludedDirs: cfg.excludedDirs ?? [] });
       if (cfg.rootDir) setDir(cfg.rootDir);
     }
 
     const data = await api.getRepos();
     setRepos(data.repos.map(repoDataToInfo));
-    if (data.machines.length > 0) setMachines(data.machines.map(m => ({ name: m.name, url: m.url, online: m.online })));
     setLoading(false);
   });
 
@@ -618,7 +611,7 @@ export default function App() {
     for (const repo of safeRepos) {
       setRepoBusy(repo.path, true);
       setRepoMsg(repo.path, "Pulling...");
-      const result = await api.pullRepo(repo.path, repo.machine !== "local" ? repo.machine : undefined);
+      const result = await api.pullRepo(repo.path);
       if (result.ok) {
         pulled += 1;
         setRepoMsg(repo.path, "Pulled");
@@ -644,7 +637,7 @@ export default function App() {
   const hasCached = () => repos().some(r => r.cached);
 
   const listData = createMemo(() => {
-    let all = machineFilter() ? repos().filter(r => r.machine === machineFilter()) : repos();
+    let all = repos();
     const q = search().trim().toLowerCase();
     if (q) {
       all = all.filter(r =>
@@ -703,7 +696,6 @@ export default function App() {
   function RepoCard(props: { repo: RepoInfo }) {
     const repo = () => props.repo;
     const isSelected = () => selectedRepo() === repo().path;
-    const isRemote = () => repo().machine !== "local";
     function selectRepo() {
       if (isSelected()) {
         setSelectedRepo(null);
@@ -743,9 +735,6 @@ export default function App() {
                 >{repo().name}</div>
                 <Show when={repo().pinned}>
                   <span class="text-[10px] text-sky-400/80" title="Pinned">◆</span>
-                </Show>
-                <Show when={isRemote()}>
-                  <span class="text-[10px] px-1 py-0.5 rounded bg-indigo-500/10 text-indigo-400/70 border border-indigo-500/20 leading-none">{repo().machine}</span>
                 </Show>
               </div>
               <div class="text-[11px] text-zinc-600 truncate leading-tight mt-px">{repo().path}</div>
@@ -1044,18 +1033,12 @@ export default function App() {
             </div>
           </Show>
 
-          <Show when={repo().machine !== "local"}>
-            <div class="mb-3 px-2 py-1 rounded text-[11px] bg-indigo-500/10 text-indigo-400/70 border border-indigo-500/20">
-              Machine: {repo().machine}
-            </div>
-          </Show>
-
           <div class="flex flex-wrap items-center gap-2 mb-4">
             <Show when={repo().status.behind > 0}>
-              <PullButton repoPath={repo().path} repoName={repo().name} behind={repo().status.behind} machine={repo().machine !== "local" ? repo().machine : undefined} onRefresh={handleRefreshRepo} />
+              <PullButton repoPath={repo().path} repoName={repo().name} behind={repo().status.behind} onRefresh={handleRefreshRepo} />
             </Show>
             <Show when={repo().status.ahead > 0}>
-              <PushButton repoPath={repo().path} repoName={repo().name} ahead={repo().status.ahead} machine={repo().machine !== "local" ? repo().machine : undefined} onRefresh={handleRefreshRepo} />
+              <PushButton repoPath={repo().path} repoName={repo().name} ahead={repo().status.ahead} onRefresh={handleRefreshRepo} />
             </Show>
             <Show when={repo().status.staged > 0 || repo().status.unstaged > 0 || repo().status.untracked > 0}>
               <CommitButton repoPath={repo().path} commitBusy={commitBusy} commitPhase={commitPhase} commitError={commitError} onCommit={() => handleStartCommit(repo().path)} onCancel={handleCancelCommit} onDismissError={() => handleDismissCommitError(repo().path)} />
@@ -1285,7 +1268,7 @@ export default function App() {
                       <span class="text-[10px] text-zinc-600">e.g. CrofAI/deepseek-v4-flash</span>
                        <button
                          onClick={async () => {
-                           const newConfig = { opencodeModel: modelDraft() || "CrofAI/deepseek-v4-flash", excludedDirs: config().excludedDirs, machines: config().machines };
+                           const newConfig = { opencodeModel: modelDraft() || "CrofAI/deepseek-v4-flash", excludedDirs: config().excludedDirs };
                            await api.setConfig(newConfig);
                            setConfig(newConfig);
                            setShowSettings(false);
@@ -1305,7 +1288,7 @@ export default function App() {
                           <button
                             onClick={async () => {
                               const updated = (config().excludedDirs ?? []).filter(x => x !== d)
-                              const newConfig = { opencodeModel: config().opencodeModel, excludedDirs: updated, machines: config().machines }
+                              const newConfig = { opencodeModel: config().opencodeModel, excludedDirs: updated }
                               await api.setConfig(newConfig)
                               setConfig(newConfig)
                             }}
@@ -1341,7 +1324,7 @@ export default function App() {
                               return;
                             }
                             const updated = [...current, p];
-                            const newConfig = { opencodeModel: config().opencodeModel, excludedDirs: updated, machines: config().machines }
+                            const newConfig = { opencodeModel: config().opencodeModel, excludedDirs: updated }
                             await api.setConfig(newConfig)
                             setConfig(newConfig)
                             setExcludeDraft("")
@@ -1351,74 +1334,6 @@ export default function App() {
                       </div>
                     </div>
 
-                    <div class="border-t border-zinc-800 pt-3 mb-2">
-                      <div class="text-[11px] font-medium text-zinc-400 mb-2 uppercase tracking-wider">Remote Machines</div>
-                      <div class="flex items-center gap-2 px-2 py-1.5 bg-zinc-800/30 rounded mb-2">
-                        <span class="text-[10px] text-zinc-500">Your token:</span>
-                        <code class="text-[10px] text-zinc-400 font-mono bg-zinc-800 px-1.5 py-0.5 rounded select-all">{config().token || "loading..."}</code>
-                        <button
-                          onMouseDown={() => navigator.clipboard.writeText(config().token || "")}
-                          class="text-[10px] text-zinc-500 hover:text-zinc-300 ml-auto shrink-0"
-                        >copy</button>
-                      </div>
-                      <For each={config().machines ?? []}>{(m) =>
-                        <div class="flex items-center justify-between py-1.5 px-2 bg-zinc-800/50 rounded mb-1">
-                          <div class="flex items-center gap-2 min-w-0">
-                            <span class="text-[10px] text-emerald-400/60 shrink-0">●</span>
-                            <span class="text-[12px] text-zinc-300 truncate">{m.name}</span>
-                            <span class="text-[10px] text-zinc-600 truncate hidden sm:block">{m.url}</span>
-                          </div>
-                          <button
-                            onClick={async () => {
-                              const updated = (config().machines ?? []).filter(x => x.name !== m.name)
-                              const newConfig = { opencodeModel: config().opencodeModel, excludedDirs: config().excludedDirs, machines: updated }
-                              await api.setConfig(newConfig)
-                              setConfig(newConfig)
-                              setMachines(updated.map(x => ({ ...x, online: machines().find(m2 => m2.name === x.name)?.online ?? false })))
-                            }}
-                            class="text-zinc-600 hover:text-red-400 text-[14px] leading-none ml-2 shrink-0"
-                          >×</button>
-                        </div>
-                      }</For>
-
-                      <div class="flex items-center gap-1 mt-2">
-                        <input
-                          value={machineNameDraft()}
-                          onInput={(e) => setMachineNameDraft(e.currentTarget.value)}
-                          placeholder="name"
-                          class="flex-1 bg-zinc-800 border border-zinc-700 rounded px-2 py-1.5 text-[11px] text-zinc-300 focus:outline-none focus:border-zinc-500 min-w-0"
-                        />
-                        <input
-                          value={machineUrlDraft()}
-                          onInput={(e) => setMachineUrlDraft(e.currentTarget.value)}
-                          placeholder="http://git-glance.local:3451"
-                          class="flex-1 bg-zinc-800 border border-zinc-700 rounded px-2 py-1.5 text-[11px] text-zinc-300 focus:outline-none focus:border-zinc-500 min-w-0"
-                        />
-                        <input
-                          value={machineTokenDraft()}
-                          onInput={(e) => setMachineTokenDraft(e.currentTarget.value)}
-                          placeholder="token"
-                          class="flex-1 bg-zinc-800 border border-zinc-700 rounded px-2 py-1.5 text-[11px] text-zinc-300 font-mono focus:outline-none focus:border-zinc-500 min-w-0"
-                        />
-                        <button
-                          onClick={async () => {
-                            const name = machineNameDraft().trim()
-                            const url = machineUrlDraft().trim()
-                            const token = machineTokenDraft().trim()
-                            if (!name || !url || !token) return
-                            const updated = [...(config().machines ?? []), { name, url, token }]
-                            const newConfig = { opencodeModel: config().opencodeModel, excludedDirs: config().excludedDirs, machines: updated }
-                            await api.setConfig(newConfig)
-                            setConfig(newConfig)
-                            setMachines(updated.map(x => ({ ...x, online: machines().find(m2 => m2.name === x.name)?.online ?? false })))
-                            setMachineNameDraft("")
-                            setMachineUrlDraft("")
-                            setMachineTokenDraft("")
-                          }}
-                          class="px-2 py-1.5 bg-zinc-700 hover:bg-zinc-600 rounded text-[11px] font-medium transition-colors shrink-0"
-                        >+</button>
-                      </div>
-                    </div>
                   </div>
                 </>
               </Show>
@@ -1431,31 +1346,6 @@ export default function App() {
             </div>
           </Show>
         </div>
-
-        <Show when={machines().length > 0}>
-          <div class="flex items-center gap-1 mb-3">
-            <button onMouseDown={() => setMachineFilter(null)}
-              class="text-[11px] px-2 py-1 rounded transition-colors"
-              classList={{ "bg-zinc-800 text-zinc-300": machineFilter() === null, "text-zinc-600 hover:text-zinc-400": machineFilter() !== null }}
-            >All</button>
-            <span class="text-zinc-800">·</span>
-            <Show when={repos().some(r => r.machine === "local")}>
-              <button onMouseDown={() => setMachineFilter("local")}
-                class="text-[11px] px-2 py-1 rounded transition-colors"
-                classList={{ "bg-zinc-800 text-zinc-300": machineFilter() === "local", "text-zinc-600 hover:text-zinc-400": machineFilter() !== "local" }}
-              >Local</button>
-            </Show>
-            <For each={machines()}>{(m) =>
-              <button onMouseDown={() => setMachineFilter(m.name)}
-                class="text-[11px] px-2 py-1 rounded transition-colors flex items-center gap-1"
-                classList={{ "bg-zinc-800 text-zinc-300": machineFilter() === m.name, "text-zinc-600 hover:text-zinc-400": machineFilter() !== m.name }}
-              >
-                <span classList={{ "text-emerald-400/60": m.online, "text-red-400/60": !m.online }}>●</span>
-                {m.name}
-              </button>
-            }</For>
-          </div>
-        </Show>
 
         <Show when={dir()}>
           <div class="text-[11px] text-zinc-700 mb-3 truncate flex items-center gap-2">
