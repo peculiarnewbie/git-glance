@@ -12,13 +12,17 @@ function logError(msg: string, extra?: Record<string, unknown>) {
 
 export type AuthState = "loading" | "authenticated" | "unauthenticated"
 
+// Packaged Electrobun views have a custom origin, so use the local server
+// directly. Browser and Vite development builds stay same-origin.
+const BASE = location.protocol === "views:" ? "http://127.0.0.1:3451" : ""
+
 export interface SessionResponse {
   user: { email: string }
 }
 
 export async function checkSession(): Promise<{ state: "authenticated"; email: string } | { state: "unauthenticated" } | { state: "local" }> {
   try {
-    const res = await fetch("/api/session")
+    const res = await fetch(`${BASE}/api/session`)
     if (res.ok) {
       const data: SessionResponse = await res.json()
       return { state: "authenticated", email: data.user.email }
@@ -30,119 +34,123 @@ export async function checkSession(): Promise<{ state: "authenticated"; email: s
 }
 
 export function login() {
-  window.location.href = "/api/auth/login"
+  window.location.href = `${BASE}/api/auth/login`
 }
 
 export async function logout() {
-  await fetch("/api/auth/logout", { method: "POST" })
+  await fetch(`${BASE}/api/auth/logout`, { method: "POST" })
   window.location.href = "/"
 }
 
-const BASE = ""
+type HttpMethod = "GET" | "POST" | "PATCH"
 
-let ws: WebSocket | null = null
-let pending = new Map<string, { resolve: (v: any) => void; reject: (e: any) => void }>()
-let subscriptions = new Map<string, Set<(data: any) => void>>()
-let reposUpdateHandlers = new Set<(repos: any[], agentId: string) => void>()
-let idCounter = 0
-
-let connectPromise: Promise<void> | null = null
-
-function connect(): Promise<void> {
-  if (ws?.readyState === WebSocket.OPEN) return Promise.resolve()
-  if (connectPromise) return connectPromise
-  connectPromise = new Promise((resolve, reject) => {
-    const protocol = location.protocol === "https:" ? "wss:" : "ws:"
-    const host = location.host
-    const url = `${protocol}//${host}/ws`
-    logInfo("[ws] connecting", { url })
-    ws = new WebSocket(url)
-    ws.onopen = () => {
-      logInfo("[ws] connected")
-      connectPromise = null
-      resolve()
-    }
-    ws.onerror = (ev) => {
-      logError("[ws] connection error")
-      connectPromise = null
-      reject(new Error("WebSocket connection failed"))
-    }
-    ws.onclose = (ev) => {
-      logWarn("[ws] closed", { code: ev.code, reason: ev.reason })
-      connectPromise = null
-      ws = null
-      for (const [, p] of pending) p.reject(new Error("Connection closed"))
-      pending.clear()
-      for (const [, subs] of subscriptions) {
-        for (const fn of subs) fn({ type: "error", error: "Connection closed" })
-      }
-      subscriptions.clear()
-    }
-    ws.onmessage = (msg) => {
-      try {
-        const msgData = JSON.parse(msg.data)
-        const { id, type, data, error } = msgData
-        const recvExtra: Record<string, unknown> = { id, type }
-        if (error !== undefined) recvExtra.error = error
-        if (data !== undefined && type !== "result") {
-          const { phase, current, total } = data
-          if (phase !== undefined) recvExtra.phase = phase
-          if (current !== undefined) recvExtra.current = current
-          if (total !== undefined) recvExtra.total = total
-        }
-        if (import.meta.env.DEV) logInfo("[ws] recv", recvExtra)
-        if (type === "result") {
-          const p = pending.get(id)
-          if (p) { p.resolve(data); pending.delete(id) }
-        } else if (type === "error") {
-          logError("[ws] recv error", { id, error, data })
-          const p = pending.get(id)
-          if (p) { p.reject(new Error(error)); pending.delete(id) }
-          const subs = subscriptions.get(id)
-          if (subs) { for (const fn of subs) fn({ type: "error", error }); subscriptions.delete(id) }
-        } else if (type === "progress") {
-          subscriptions.get(id)?.forEach(fn => fn(data))
-        } else if (type === "done") {
-          subscriptions.get(id)?.forEach(fn => fn({ type: "done" }))
-          subscriptions.delete(id)
-        } else if (type === "ack") {
-          subscriptions.get(id)?.forEach(fn => fn({ type: "ack", agentId: msgData.agentId, action: msgData.action }))
-        } else if (type === "repos_update") {
-          reposUpdateHandlers.forEach(fn => fn(data?.repos ?? msgData.repos ?? data, data?.agentId ?? msgData.agentId))
-        }
-      } catch (e) { logError("[ws] parse error", { error: String(e) }) }
-    }
-  })
-  return connectPromise
+function queryString(params: Record<string, unknown> | undefined): string {
+  if (!params) return ""
+  const query = new URLSearchParams()
+  for (const [key, value] of Object.entries(params)) {
+    if (value !== undefined && value !== null) query.set(key, String(value))
+  }
+  const encoded = query.toString()
+  return encoded ? `?${encoded}` : ""
 }
 
-async function send<T>(action: string, params?: Record<string, any>): Promise<T> {
-  await connect()
-  const id = String(++idCounter)
-  return new Promise((resolve, reject) => {
-    pending.set(id, { resolve, reject })
-    ws!.send(JSON.stringify({ id, action, params }))
+async function request<T>(method: HttpMethod, path: string, params?: Record<string, any>): Promise<T> {
+  const isRead = method === "GET"
+  const response = await fetch(`${BASE}${path}${isRead ? queryString(params) : ""}`, {
+    method,
+    headers: isRead ? undefined : { "content-type": "application/json" },
+    body: isRead ? undefined : JSON.stringify(params ?? {}),
   })
+  const contentType = response.headers.get("content-type") || ""
+  if (!contentType.includes("application/json")) {
+    throw new Error("Git Glance server is outdated or unavailable. Rebuild and restart the local service.")
+  }
+  const body = await response.json().catch(() => ({}))
+  if (!response.ok) throw new Error(body.error || `Request failed (${response.status})`)
+  return body as T
 }
 
-function subscribe(
-  action: string,
-  params: Record<string, any> | undefined,
-  onEvent: (data: any) => void,
-  cancelAction = "cancel",
-): AbortController {
-  const controller = new AbortController()
-  connect().then(() => {
-    if (controller.signal.aborted) return
-    const id = String(++idCounter)
-    const subs = new Set([onEvent])
-    subscriptions.set(id, subs)
-    ws!.send(JSON.stringify({ id, action, params }))
-    controller.signal.addEventListener("abort", () => {
-      subscriptions.delete(id)
-      send(cancelAction, { targetRequestId: id }).catch((e) => logError("[ws] cancel failed", { action, cancelAction, targetRequestId: id, error: String(e) }))
+async function send<T>(action: string, params: Record<string, any> = {}): Promise<T> {
+  switch (action) {
+    case "getRepos": return request<T>("GET", "/api/repos")
+    case "getWorkspaceStatus": return request<T>("GET", "/api/workspace")
+    case "getRepoStatus": return request<T>("GET", "/api/repos/status", params)
+    case "searchRepos": return request<T>("GET", "/api/repos/search", params)
+    case "getRecentActivity": return request<T>("GET", "/api/activity", params)
+    case "getDiff": return request<T>("GET", "/api/diff", params)
+    case "getConfig": return request<T>("GET", "/api/config")
+    case "setConfig": return request<T>("PATCH", "/api/config", params)
+    case "pull": return request<T>("POST", "/api/repos/pull", params)
+    case "push": return request<T>("POST", "/api/repos/push", params)
+    case "rescanRepo": return request<T>("POST", "/api/repos/rescan", params)
+    case "checkPull": return request<T>("POST", "/api/repos/check-pull", params)
+    case "updateRepoSettings": return request<T>("PATCH", "/api/repos/settings", params)
+    case "cancel": case "cancelScan": case "cancelCommit": case "cancelFetch":
+      return request<T>("POST", "/api/operations/cancel")
+    default: throw new Error(`Unsupported HTTP action: ${action}`)
+  }
+}
+
+type OperationEvent = { operationId: string; type: "progress" | "done" | "error"; data?: any; error?: string }
+type OperationSubscriber = { onEvent: (data: any) => void; onError?: (error: Error) => void }
+const operationSubscribers = new Map<string, OperationSubscriber>()
+const pendingOperationEvents = new Map<string, OperationEvent[]>()
+let eventSource: EventSource | null = null
+let eventsReady: Promise<void> | null = null
+
+function handleOperationEvent(event: OperationEvent) {
+  const subscriber = operationSubscribers.get(event.operationId)
+  if (!subscriber) {
+    const queued = pendingOperationEvents.get(event.operationId) ?? []
+    queued.push(event)
+    pendingOperationEvents.set(event.operationId, queued)
+    return
+  }
+  if (event.type === "error") subscriber.onError?.(new Error(event.error || "Operation failed"))
+  else if (event.type === "progress" && event.data !== undefined) subscriber.onEvent(event.data)
+  else if (event.type === "done") {
+    if (event.data !== undefined) subscriber.onEvent(event.data)
+    operationSubscribers.delete(event.operationId)
+  }
+}
+
+function ensureEvents(): Promise<void> {
+  if (eventsReady) return eventsReady
+  if (typeof EventSource === "undefined") return Promise.reject(new Error("Server-sent events are not supported"))
+  eventSource = new EventSource(`${BASE}/api/events`)
+  eventsReady = new Promise((resolve) => {
+    eventSource!.onopen = () => resolve()
+  })
+  for (const type of ["progress", "done", "error"] as const) {
+    eventSource.addEventListener(type, (raw) => {
+      try { handleOperationEvent(JSON.parse((raw as MessageEvent<string>).data)) }
+      catch (error) { logError("[sse] parse error", { error: String(error) }) }
     })
-  })
+  }
+  eventSource.onerror = () => logWarn("[sse] connection interrupted; browser will retry")
+  return eventsReady
+}
+
+function subscribeOperation(path: string, params: Record<string, any> | undefined, onEvent: (data: any) => void, onError?: (error: Error) => void): AbortController {
+  const controller = new AbortController()
+  ensureEvents()
+    .then(() => request<{ operationId: string }>("POST", path, params))
+    .then(({ operationId }) => {
+      if (controller.signal.aborted) {
+        void send("cancel").catch(error => logError("[sse] cancel failed", { error: String(error) }))
+        return
+      }
+      const subscriber = { onEvent, onError }
+      operationSubscribers.set(operationId, subscriber)
+      const queued = pendingOperationEvents.get(operationId) ?? []
+      pendingOperationEvents.delete(operationId)
+      queued.forEach(handleOperationEvent)
+      controller.signal.addEventListener("abort", () => {
+        operationSubscribers.delete(operationId)
+        void send("cancel").catch(error => logError("[sse] cancel failed", { error: String(error) }))
+      }, { once: true })
+    })
+    .catch(error => onError?.(error instanceof Error ? error : new Error(String(error))))
   return controller
 }
 
@@ -163,14 +171,14 @@ export interface RepoData {
   settings: { skipUntracked: boolean; skipPullCheck: boolean; autoPullIfClean: boolean; hidden: boolean; pinned: boolean } | null
 }
 
-// Derive RepoInfo from the schema of truth (WebSocket response)
+// Derive RepoInfo from the API response schema.
 export type RepoName = RepoData['name'];
 export type RepoPath = RepoData['path'];
 export type RepoBranch = RepoData['branch'];
 export type RepoRemote = RepoData['remote'];
 export type RepoError = RepoData['error'];
 
-// This is the source of truth - derived from WebSocket response schema
+// This is the source of truth - derived from API response schema.
 export interface RepoInfo {
   path: RepoPath;
   name: RepoName;
@@ -268,27 +276,13 @@ export const api = {
   cancelFetch: (): Promise<void> => send("cancelFetch").then(() => {}),
 
   subscribeScan: (rootDir: RepoPath, onEvent: (ev: ProgressEvent) => void, onError?: (error: Error) => void): AbortController =>
-    subscribe("scan", { rootDir }, (data) => {
-      if (data.type === "error") { onError?.(new Error(data.error)); return }
-      if (data.type === "ack") return
-      if (data.type === "done") return
-      onEvent(data)
-    }, "cancelScan"),
+    subscribeOperation("/api/operations/scan", { rootDir }, onEvent, onError),
 
   subscribeCommitPush: (repo: string, onEvent: (ev: CommitEvent) => void): AbortController =>
-    subscribe("commitPush", { repo }, (data) => {
-      if (data.type === "ack") return
-      if (data.type === "done") return
-      onEvent(data)
-    }, "cancelCommit"),
+    subscribeOperation("/api/operations/commit", { repo }, onEvent),
 
   subscribeScanOnly: (rootDir: RepoPath, onEvent: (ev: ProgressEvent) => void, onError?: (error: Error) => void): AbortController =>
-    subscribe("scanOnly", { rootDir }, (data) => {
-      if (data.type === "error") { onError?.(new Error(data.error)); return }
-      if (data.type === "ack") return
-      if (data.type === "done") return
-      onEvent(data)
-    }, "cancelScan"),
+    subscribeOperation("/api/operations/scan-only", { rootDir }, onEvent, onError),
 
   rescanRepo: (repo: RepoPath): Promise<{ ok: boolean; repo?: RepoData; error?: string }> =>
     send("rescanRepo", { repo }),
@@ -309,16 +303,7 @@ export const api = {
   },
 
   subscribeFetch: (onEvent: (ev: FetchEvent) => void): AbortController =>
-    subscribe("fetchAll", undefined, (data) => {
-      if (data.type === "ack") return
-      if (data.type === "done") return
-      onEvent(data)
-    }, "cancelFetch"),
-
-  onReposUpdate: (fn: (repos: any[], agentId: string) => void) => {
-    reposUpdateHandlers.add(fn)
-    return () => reposUpdateHandlers.delete(fn)
-  },
+    subscribeOperation("/api/operations/fetch", undefined, onEvent),
 
   // Effect wrappers for backward compat with App.tsx
   pullRepoEffect: (repo: string) =>

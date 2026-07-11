@@ -1,5 +1,6 @@
 mod cache;
 mod git;
+mod http;
 mod opencode;
 mod scanner;
 mod types;
@@ -15,13 +16,13 @@ use std::sync::Arc;
 
 use axum::body::Body;
 use axum::extract::State;
-use axum::http::{Request, Response, StatusCode};
+use axum::http::{header, Method, Request, Response, StatusCode};
 use axum::response::IntoResponse;
 use axum::routing::get;
 use axum::Router;
+use tower_http::cors::{AllowOrigin, CorsLayer};
 
 struct AppState {
-    deps: Arc<ws::ServerDeps>,
     static_dir: Option<PathBuf>,
     dev_url: Option<String>,
 }
@@ -450,16 +451,21 @@ pub async fn run_server(args: CliArgs) -> io::Result<()> {
     }
 
     let state = Arc::new(AppState {
-        deps,
         static_dir,
         dev_url,
     });
 
     let app = Router::new()
-        .route("/ws", get(ws_upgrade_handler))
         .route("/health", get(health_handler))
         .fallback(get(static_handler))
-        .with_state(state);
+        .with_state(state)
+        .merge(http::router(deps.clone()))
+        .layer(
+            CorsLayer::new()
+                .allow_origin(AllowOrigin::exact("views://mainview".parse().unwrap()))
+                .allow_methods([Method::GET, Method::POST, Method::PATCH])
+                .allow_headers([header::CONTENT_TYPE]),
+        );
 
     let addr: SocketAddr = match format!("{}:{}", host, port).parse() {
         Ok(a) => a,
@@ -480,15 +486,6 @@ pub async fn run_server(args: CliArgs) -> io::Result<()> {
         .map_err(io::Error::other)
 }
 
-async fn ws_upgrade_handler(
-    ws: axum::extract::ws::WebSocketUpgrade,
-    State(state): State<Arc<AppState>>,
-) -> impl IntoResponse {
-    ws.on_upgrade(|socket| async move {
-        ws::handle_ws_connection(socket, state.deps.clone()).await;
-    })
-}
-
 async fn health_handler() -> impl IntoResponse {
     axum::Json(serde_json::json!({"status": "ok"}))
 }
@@ -498,8 +495,8 @@ async fn static_handler(State(state): State<Arc<AppState>>, req: Request<Body>) 
 
     if path == "/ws" {
         return Response::builder()
-            .status(StatusCode::UPGRADE_REQUIRED)
-            .body(Body::from("WebSocket upgrade required"))
+            .status(StatusCode::NOT_FOUND)
+            .body(Body::from("WebSocket API removed; use /api endpoints"))
             .unwrap();
     }
 

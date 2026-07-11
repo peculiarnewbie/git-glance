@@ -263,15 +263,18 @@ export default function App() {
       setAuthState("authenticated");
     }
 
-    const cfg = await api.getConfig();
-    if (cfg) {
+    try {
+      const cfg = await api.getConfig();
       setConfig({ opencodeModel: cfg.opencodeModel, excludedDirs: cfg.excludedDirs ?? [] });
       if (cfg.rootDir) setDir(cfg.rootDir);
-    }
 
-    const data = await api.getRepos();
-    setRepos(data.repos.map(repoDataToInfo));
-    setLoading(false);
+      const data = await api.getRepos();
+      setRepos(data.repos.map(repoDataToInfo));
+    } catch (error) {
+      setScanError(error instanceof Error ? error.message : "Could not load Git Glance data.");
+    } finally {
+      setLoading(false);
+    }
   });
 
   onCleanup(() => {

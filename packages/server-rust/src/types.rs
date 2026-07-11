@@ -229,14 +229,14 @@ pub struct WSRequest {
     pub params: serde_json::Value,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WSResponse {
     pub id: String,
     #[serde(rename = "type")]
     pub msg_type: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub data: Option<serde_json::Value>,
-    #[serde(skip_serializing_if = "String::is_empty")]
+    #[serde(default, skip_serializing_if = "String::is_empty")]
     #[serde(rename = "error")]
     pub error: String,
 }

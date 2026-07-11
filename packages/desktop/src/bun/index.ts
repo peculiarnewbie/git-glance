@@ -48,12 +48,8 @@ async function waitForServer(url: string, timeout = 10000) {
   const start = Date.now()
   while (Date.now() - start < timeout) {
     try {
-      const ws = new WebSocket(url.replace("http://", "ws://").replace("https://", "wss://") + "/ws")
-      await new Promise<void>((resolve, reject) => {
-        ws.onopen = () => { ws.close(); resolve() }
-        ws.onerror = () => reject()
-      })
-      return
+      const response = await fetch(`${url}/health`)
+      if (response.ok) return
     } catch {}
     await Bun.sleep(200)
   }

@@ -1,5 +1,4 @@
-use axum::extract::ws::{Message as AxumMessage, WebSocket};
-use futures::{stream, SinkExt, StreamExt};
+use futures::{stream, StreamExt};
 use serde_json::json;
 use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
@@ -24,47 +23,13 @@ fn now_millis() -> i64 {
         .as_millis() as i64
 }
 
-pub async fn handle_ws_connection(socket: WebSocket, deps: Arc<ServerDeps>) {
-    println!("WS client connected");
-
-    let (mut write, mut read) = socket.split();
-    let (tx, mut rx) = mpsc::channel::<String>(128);
-
-    tokio::spawn(async move {
-        while let Some(msg) = rx.recv().await {
-            if write.send(AxumMessage::Text(msg.into())).await.is_err() {
-                break;
-            }
-        }
-    });
-
-    while let Some(msg) = read.next().await {
-        let msg = match msg {
-            Ok(AxumMessage::Text(t)) => t,
-            Ok(_) => continue,
-            Err(_) => break,
-        };
-
-        let req: WSRequest = match serde_json::from_str(&msg) {
-            Ok(r) => r,
-            Err(_) => continue,
-        };
-
-        let tx = tx.clone();
-        let deps = deps.clone();
-        tokio::spawn(async move {
-            handle_action(req, deps, tx).await;
-        });
-    }
-}
-
 async fn send_response(tx: &mpsc::Sender<String>, resp: WSResponse) {
     if let Ok(data) = serde_json::to_string(&resp) {
         let _ = tx.send(data).await;
     }
 }
 
-async fn handle_action(req: WSRequest, deps: Arc<ServerDeps>, tx: mpsc::Sender<String>) {
+pub async fn handle_action(req: WSRequest, deps: Arc<ServerDeps>, tx: mpsc::Sender<String>) {
     match req.action.as_str() {
         "getRepos" => handle_get_repos(&req, &deps, &tx).await,
         "getWorkspaceStatus" => handle_get_workspace_status(&req, &deps, &tx).await,
