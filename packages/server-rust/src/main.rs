@@ -178,6 +178,8 @@ ExecStart={binary} --static {static_dir} --port {port} --host {host}
 Restart=on-failure
 RestartSec=5
 Environment=CONFIG_DIR=%h/.git-glance
+# Inherit the user ssh-agent so push/pull/fetch work without a TTY.
+Environment=SSH_AUTH_SOCK=%t/ssh-agent.socket
 
 [Install]
 WantedBy=default.target
