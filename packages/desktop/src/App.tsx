@@ -358,7 +358,15 @@ export default function App() {
       } else if (data.phase === "done") {
         if (flushTimer !== null) { clearTimeout(flushTimer); flushTimer = null; }
         flushRepoBuffer();
-        setScanning(false);
+        // Progress events are incremental and are merged into the current list.
+        // Reconcile with the server's complete snapshot so repos removed from
+        // disk during the scan are removed from the UI as well.
+        void api.getRepos()
+          .then((latest) => setRepos(latest.repos.map(repoDataToInfo)))
+          .catch((error: unknown) => {
+            setScanError(error instanceof Error ? error.message : "Failed to refresh repositories after scan.");
+          })
+          .finally(() => setScanning(false));
       }
     }, (error) => {
       setScanError(error?.message || "Scan failed before reaching the agent.");

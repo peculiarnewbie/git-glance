@@ -30,6 +30,7 @@ struct AppState {
 #[derive(Clone)]
 pub struct CliArgs {
     pub port: u16,
+    pub host: String,
     pub static_dir: Option<String>,
     pub dev_url: Option<String>,
     pub machine_name: Option<String>,
@@ -49,6 +50,7 @@ fn hostname_or_default() -> String {
 pub fn parse_args() -> CliArgs {
     let args: Vec<String> = std::env::args().collect();
     let mut port = 3451u16;
+    let mut host = "0.0.0.0".to_string();
     let mut static_dir = None;
     let mut dev_url = None;
     let mut machine_name = None;
@@ -77,6 +79,12 @@ pub fn parse_args() -> CliArgs {
                 let v = inline_value.or(value_from_next);
                 if let Some(v) = v {
                     port = v.parse().unwrap_or(3451);
+                }
+            }
+            "--host" => {
+                let v = inline_value.or(value_from_next);
+                if let Some(v) = v {
+                    host = v;
                 }
             }
             "--static" => {
@@ -132,6 +140,9 @@ pub fn parse_args() -> CliArgs {
             port = p;
         }
     }
+    if let Ok(v) = std::env::var("HOST") {
+        host = v;
+    }
     if let Ok(v) = std::env::var("STATIC_DIR") {
         static_dir = Some(v);
     }
@@ -144,6 +155,7 @@ pub fn parse_args() -> CliArgs {
 
     CliArgs {
         port,
+        host,
         static_dir,
         dev_url,
         machine_name,
@@ -161,6 +173,7 @@ fn print_help() {
     println!("  git-glance-serve [OPTIONS]\n");
     println!("OPTIONS:");
     println!("  --port <PORT>              Server port (default: 3451, env: PORT)");
+    println!("  --host <HOST>              Bind address (default: 0.0.0.0, env: HOST)");
     println!("  --static <DIR>             Static files directory (env: STATIC_DIR)");
     println!("  --dev-url <URL>            Vite dev server URL for proxy (env: DEV_URL)");
     println!("  --name <NAME>              Machine name (env: MACHINE_NAME, default: hostname)");
@@ -181,7 +194,7 @@ fn systemd_user_dir() -> PathBuf {
         .join("user")
 }
 
-fn generate_unit(port: u16, static_dir: &str, binary: &str) -> String {
+fn generate_unit(port: u16, host: &str, static_dir: &str, binary: &str) -> String {
     format!(
         r#"[Unit]
 Description=Git Glance Dashboard
@@ -189,7 +202,7 @@ After=network.target
 
 [Service]
 Type=simple
-ExecStart={binary} --static {static_dir} --port {port}
+ExecStart={binary} --static {static_dir} --port {port} --host {host}
 Restart=on-failure
 RestartSec=5
 Environment=CONFIG_DIR=%h/.git-glance
@@ -200,6 +213,7 @@ WantedBy=default.target
         binary = binary,
         static_dir = static_dir,
         port = port,
+        host = host,
     )
 }
 
@@ -313,7 +327,7 @@ fn install_service_linux(args: &CliArgs) {
     let unit_dir = systemd_user_dir();
     let unit_path = unit_dir.join(format!("{}.service", SERVICE_NAME));
     let static_dir_str = static_dir.to_string_lossy().to_string();
-    let unit_content = generate_unit(args.port, &static_dir_str, &binary);
+    let unit_content = generate_unit(args.port, &args.host, &static_dir_str, &binary);
 
     std::fs::create_dir_all(&unit_dir).expect("cannot create systemd user dir");
     std::fs::write(&unit_path, &unit_content).expect("cannot write unit file");
@@ -438,6 +452,7 @@ pub(crate) fn server_error_message(err: &io::Error, port: u16) -> String {
 
 pub async fn run_server(args: CliArgs) -> io::Result<()> {
     let port = args.port;
+    let host = args.host.clone();
     let static_dir_arg = args.static_dir.clone();
     let dev_url = args.dev_url.clone();
     let machine_name = args
@@ -507,8 +522,14 @@ pub async fn run_server(args: CliArgs) -> io::Result<()> {
         .fallback(get(static_handler))
         .with_state(state);
 
-    let addr = SocketAddr::from(([127, 0, 0, 1], port));
-    println!("Starting server on http://git-glance.local:{}", port);
+    let addr: SocketAddr = match format!("{}:{}", host, port).parse() {
+        Ok(a) => a,
+        Err(_) => {
+            eprintln!("invalid host '{}', falling back to 0.0.0.0", host);
+            format!("0.0.0.0:{}", port).parse().unwrap()
+        }
+    };
+    println!("Starting server on http://{}:{}", host, port);
 
     let listener = match tokio::net::TcpListener::bind(addr).await {
         Ok(listener) => listener,

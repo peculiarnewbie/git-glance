@@ -44,8 +44,9 @@ pub fn install(args: &CliArgs) {
     let static_dir_arg = format!("\"{}\"", static_dir.display());
 
     let command = format!(
-        "\"{}\" --port {} --static {}",
+        "\"{}\" --host {} --port {} --static {}",
         binary.display(),
+        args.host,
         args.port,
         static_dir_arg
     );

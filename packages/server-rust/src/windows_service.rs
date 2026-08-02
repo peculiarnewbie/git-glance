@@ -41,8 +41,8 @@ fn run_service() -> windows_service::Result<()> {
     log_event(
         "info",
         &format!(
-            "GitGlance service starting (port={}, static_dir={:?})",
-            args.port, args.static_dir
+            "GitGlance service starting (host={}, port={}, static_dir={:?})",
+            args.host, args.port, args.static_dir
         ),
     );
 
@@ -119,6 +119,7 @@ pub fn install(args: &CliArgs) {
     println!("  binary:      {binary}");
     println!("  static dir:  {}", static_dir.display());
     println!("  port:        {}", args.port);
+    println!("  host:        {}", args.host);
 
     // The service runs as LocalSystem. Tell git to allow that user to access
     // any repo so it doesn't error with "dubious ownership" on every scan.
@@ -139,6 +140,7 @@ pub fn install(args: &CliArgs) {
         };
 
     let port_arg: String = args.port.to_string();
+    let host_arg: String = args.host.to_string();
 
     let service_info = ServiceInfo {
         name: OsString::from(SERVICE_NAME),
@@ -148,6 +150,8 @@ pub fn install(args: &CliArgs) {
         error_control: ServiceErrorControl::Normal,
         executable_path: std::path::PathBuf::from(&binary),
         launch_arguments: vec![
+            OsString::from("--host"),
+            OsString::from(host_arg),
             OsString::from("--port"),
             OsString::from(port_arg),
             OsString::from("--static"),
@@ -219,8 +223,9 @@ pub fn install(args: &CliArgs) {
 
 fn install_via_sc(binary: &str, args: &CliArgs, static_dir: &PathBuf) {
     let bin_path = format!(
-        "\"{}\" --port {} --static \"{}\" --windows-service",
+        "\"{}\" --host {} --port {} --static \"{}\" --windows-service",
         binary,
+        args.host,
         args.port,
         static_dir.display()
     );
