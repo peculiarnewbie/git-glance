@@ -72,6 +72,7 @@ impl GitService {
                 .args(&parts)
                 .current_dir(repo_path)
                 .env("GIT_TERMINAL_PROMPT", "0")
+                .kill_on_drop(true)
                 .output(),
         )
         .await
@@ -101,9 +102,9 @@ impl GitService {
         Ok(combined.trim().to_string())
     }
 
-    pub async fn exec_git_raw(
+    async fn exec_git_args_raw(
         &self,
-        args: &str,
+        args: &[&str],
         repo_path: &str,
         timeout: Duration,
     ) -> Result<String, GitCommandError> {
@@ -112,24 +113,24 @@ impl GitService {
         } else {
             timeout
         };
-
-        let parts: Vec<&str> = args.split_whitespace().collect();
+        let command = args.join(" ");
         let output = tokio::time::timeout(
             timeout,
             Command::new("git")
-                .args(&parts)
+                .args(args)
                 .current_dir(repo_path)
                 .env("GIT_TERMINAL_PROMPT", "0")
+                .kill_on_drop(true)
                 .output(),
         )
         .await
         .map_err(|_| GitCommandError {
-            command: format!("git {}", args),
+            command: format!("git {command}"),
             repo_path: repo_path.to_string(),
             cause: "command timed out".to_string(),
         })?
         .map_err(|e| GitCommandError {
-            command: format!("git {}", args),
+            command: format!("git {command}"),
             repo_path: repo_path.to_string(),
             cause: e.to_string(),
         })?;
@@ -137,25 +138,15 @@ impl GitService {
         let mut combined = String::new();
         combined.push_str(&String::from_utf8_lossy(&output.stdout));
         combined.push_str(&String::from_utf8_lossy(&output.stderr));
-
         if !output.status.success() {
             return Err(GitCommandError {
-                command: format!("git {}", args),
+                command: format!("git {command}"),
                 repo_path: repo_path.to_string(),
                 cause: combined.trim().to_string(),
             });
         }
 
         Ok(combined.trim_end_matches(['\r', '\n']).to_string())
-    }
-
-    pub async fn safe_exec(
-        &self,
-        args: &str,
-        repo_path: &str,
-        timeout: Duration,
-    ) -> Option<String> {
-        self.exec_git(args, repo_path, timeout).await.ok()
     }
 
     pub async fn run(
@@ -199,6 +190,7 @@ impl GitService {
                 .args(args)
                 .current_dir(repo_path)
                 .env("GIT_TERMINAL_PROMPT", "0")
+                .kill_on_drop(true)
                 .output(),
         )
         .await
@@ -249,6 +241,7 @@ impl GitService {
             .args(args)
             .current_dir(repo_path)
             .env("GIT_TERMINAL_PROMPT", "0")
+            .kill_on_drop(true)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -294,96 +287,28 @@ impl GitService {
     }
 
     pub async fn get_status(&self, repo_path: &str) -> Result<GitStatusResult, GitCommandError> {
-        let raw_status = self
-            .exec_git_raw(
-                "status --porcelain --untracked-files=all",
-                repo_path,
-                Duration::from_secs(10),
-            )
-            .await?;
-        let branch = self
-            .exec_git(
-                "rev-parse --abbrev-ref HEAD",
-                repo_path,
-                Duration::from_secs(5),
-            )
-            .await?;
-        let remote_option = self
-            .safe_exec(
-                "rev-parse --abbrev-ref --symbolic-full-name @{upstream}",
-                repo_path,
-                Duration::from_secs(5),
-            )
-            .await;
-
-        let mut ahead = 0i64;
-        let mut behind = 0i64;
-        if remote_option.is_some() {
-            if let Some(rev_list) = self
-                .safe_exec(
-                    "rev-list --left-right --count HEAD...@{upstream}",
-                    repo_path,
-                    Duration::from_secs(10),
-                )
-                .await
-            {
-                let parts: Vec<&str> = rev_list.split_whitespace().collect();
-                if parts.len() >= 2 {
-                    ahead = parts[0].parse().unwrap_or(0);
-                    behind = parts[1].parse().unwrap_or(0);
-                }
-            }
-        }
-
-        let mut staged = 0i64;
-        let mut unstaged = 0i64;
-        let mut untracked = 0i64;
-        let mut staged_files = Vec::new();
-        let mut unstaged_files = Vec::new();
-        let mut untracked_files = Vec::new();
-
-        for line in raw_status.lines() {
-            if line.is_empty() {
-                continue;
-            }
-            let file_path = parse_porcelain_path(line);
-            if line.starts_with("??") {
-                untracked += 1;
-                if !file_path.is_empty() {
-                    untracked_files.push(FileStatus {
-                        path: file_path,
-                        status: "??".to_string(),
-                    });
-                }
-            } else {
-                let bytes = line.as_bytes();
-                if !bytes.is_empty() && bytes[0] != b' ' {
-                    staged += 1;
-                    if !file_path.is_empty() {
-                        staged_files.push(FileStatus {
-                            path: file_path.clone(),
-                            status: format!("{} ", bytes[0] as char),
-                        });
-                    }
-                }
-                if bytes.len() > 1 && bytes[1] != b' ' {
-                    unstaged += 1;
-                    if !file_path.is_empty() {
-                        unstaged_files.push(FileStatus {
-                            path: file_path,
-                            status: format!(" {}", bytes[1] as char),
-                        });
-                    }
-                }
-            }
-        }
-
-        let has_changes = staged > 0 || unstaged > 0 || untracked > 0;
-
-        let last_commit_time = self
-            .safe_exec("log -1 --format=%ct", repo_path, Duration::from_secs(5))
-            .await
-            .and_then(|s| s.parse::<i64>().ok());
+        // These read-only commands are independent, so run them together. Porcelain v2
+        // includes branch, upstream, ahead/behind, and file state in one stable format.
+        let status = self.exec_git_args_raw(
+            &[
+                "status",
+                "--porcelain=v2",
+                "--branch",
+                "--untracked-files=all",
+            ],
+            repo_path,
+            Duration::from_secs(10),
+        );
+        let last_commit = self.exec_git_args_raw(
+            &["log", "-1", "--format=%ct"],
+            repo_path,
+            Duration::from_secs(5),
+        );
+        let (raw_status, last_commit_time) = tokio::join!(status, last_commit);
+        let parsed = parse_porcelain_v2(&raw_status?);
+        let last_commit_time = last_commit_time
+            .ok()
+            .and_then(|value| value.parse::<i64>().ok());
 
         let mut week_commits = 0i64;
         if let Some(lct) = last_commit_time {
@@ -393,12 +318,13 @@ impl GitService {
                 .as_secs() as i64;
             if now - lct < 7 * 24 * 3600 {
                 if let Some(raw) = self
-                    .safe_exec(
-                        r#"rev-list --count --since="1 week ago" HEAD"#,
+                    .exec_git_args_raw(
+                        &["rev-list", "--count", "--since=1 week ago", "HEAD"],
                         repo_path,
                         Duration::from_secs(10),
                     )
                     .await
+                    .ok()
                 {
                     week_commits = raw.parse().unwrap_or(0);
                 }
@@ -406,17 +332,17 @@ impl GitService {
         }
 
         Ok(GitStatusResult {
-            branch,
-            remote: remote_option,
-            has_changes,
-            staged,
-            staged_files,
-            unstaged,
-            unstaged_files,
-            untracked,
-            untracked_files,
-            ahead,
-            behind,
+            branch: parsed.branch,
+            remote: parsed.remote,
+            has_changes: parsed.staged > 0 || parsed.unstaged > 0 || parsed.untracked > 0,
+            staged: parsed.staged,
+            staged_files: parsed.staged_files,
+            unstaged: parsed.unstaged,
+            unstaged_files: parsed.unstaged_files,
+            untracked: parsed.untracked,
+            untracked_files: parsed.untracked_files,
+            ahead: parsed.ahead,
+            behind: parsed.behind,
             last_commit_time,
             week_commits,
         })
@@ -432,20 +358,105 @@ impl GitService {
     }
 }
 
-fn parse_porcelain_path(line: &str) -> String {
-    let bytes = line.as_bytes();
-    if bytes.len() <= 2 {
-        return String::new();
+#[derive(Default)]
+struct ParsedPorcelainStatus {
+    branch: String,
+    remote: Option<String>,
+    ahead: i64,
+    behind: i64,
+    staged: i64,
+    staged_files: Vec<FileStatus>,
+    unstaged: i64,
+    unstaged_files: Vec<FileStatus>,
+    untracked: i64,
+    untracked_files: Vec<FileStatus>,
+}
+
+fn parse_porcelain_v2(raw: &str) -> ParsedPorcelainStatus {
+    let mut result = ParsedPorcelainStatus::default();
+
+    for line in raw.lines() {
+        if let Some(head) = line.strip_prefix("# branch.head ") {
+            result.branch = if head == "(detached)" { "HEAD" } else { head }.to_string();
+        } else if let Some(upstream) = line.strip_prefix("# branch.upstream ") {
+            result.remote = Some(upstream.to_string());
+        } else if let Some(counts) = line.strip_prefix("# branch.ab ") {
+            for count in counts.split_whitespace() {
+                if let Some(ahead) = count.strip_prefix('+') {
+                    result.ahead = ahead.parse().unwrap_or(0);
+                } else if let Some(behind) = count.strip_prefix('-') {
+                    result.behind = behind.parse().unwrap_or(0);
+                }
+            }
+        } else if let Some(path) = line.strip_prefix("? ") {
+            result.untracked += 1;
+            result.untracked_files.push(FileStatus {
+                path: path.to_string(),
+                status: "??".to_string(),
+            });
+        } else if matches!(line.as_bytes().first(), Some(b'1' | b'2' | b'u')) {
+            let (xy, path) = match line.as_bytes()[0] {
+                b'1' => record_fields(line, 9),
+                b'2' => record_fields(line, 10),
+                b'u' => record_fields(line, 11),
+                _ => None,
+            }
+            .unwrap_or(("..", ""));
+            let path = path.split('\t').next().unwrap_or(path).to_string();
+            let bytes = xy.as_bytes();
+            if bytes.first().is_some_and(|status| *status != b'.') {
+                result.staged += 1;
+                result.staged_files.push(FileStatus {
+                    path: path.clone(),
+                    status: format!("{} ", bytes[0] as char),
+                });
+            }
+            if bytes.get(1).is_some_and(|status| *status != b'.') {
+                result.unstaged += 1;
+                result.unstaged_files.push(FileStatus {
+                    path,
+                    status: format!(" {}", bytes[1] as char),
+                });
+            }
+        }
     }
-    let start = if bytes.len() > 2 && bytes[2] == b' ' {
-        3
-    } else {
-        2
-    };
-    let path = line[start..].trim();
-    if let Some(idx) = path.rfind(" -> ") {
-        path[idx + 4..].to_string()
-    } else {
-        path.to_string()
+
+    result
+}
+
+fn record_fields(line: &str, field_count: usize) -> Option<(&str, &str)> {
+    let fields: Vec<&str> = line.splitn(field_count, ' ').collect();
+    Some((*fields.get(1)?, *fields.get(field_count - 1)?))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_porcelain_v2;
+
+    #[test]
+    fn parses_branch_counts_and_file_states() {
+        let parsed = parse_porcelain_v2(
+            "# branch.oid abc123\n# branch.head main\n# branch.upstream origin/main\n# branch.ab +2 -3\n1 M. N... 100644 100644 100644 abc def staged.txt\n1 .M N... 100644 100644 100644 abc def folder/changed file.txt\n? new file.txt",
+        );
+
+        assert_eq!(parsed.branch, "main");
+        assert_eq!(parsed.remote.as_deref(), Some("origin/main"));
+        assert_eq!((parsed.ahead, parsed.behind), (2, 3));
+        assert_eq!(parsed.staged, 1);
+        assert_eq!(parsed.staged_files[0].path, "staged.txt");
+        assert_eq!(parsed.unstaged, 1);
+        assert_eq!(parsed.unstaged_files[0].path, "folder/changed file.txt");
+        assert_eq!(parsed.untracked, 1);
+        assert_eq!(parsed.untracked_files[0].path, "new file.txt");
+    }
+
+    #[test]
+    fn parses_rename_target_and_detached_head() {
+        let parsed = parse_porcelain_v2(
+            "# branch.head (detached)\n2 R. N... 100644 100644 100644 abc def R100 new name.txt\told name.txt",
+        );
+
+        assert_eq!(parsed.branch, "HEAD");
+        assert_eq!(parsed.staged_files[0].path, "new name.txt");
     }
 }

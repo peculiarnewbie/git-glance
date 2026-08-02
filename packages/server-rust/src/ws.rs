@@ -81,7 +81,11 @@ async fn handle_action(req: WSRequest, deps: Arc<ServerDeps>, tx: mpsc::Sender<S
             scanner::cancel_scan();
             send_response(&tx, WSResponse::result(&req.id, json!({"ok": true}))).await;
         }
-        "cancelCommit" | "cancelFetch" | "cancel" => {
+        "cancelFetch" => {
+            scanner::cancel_scan();
+            send_response(&tx, WSResponse::result(&req.id, json!({"ok": true}))).await;
+        }
+        "cancelCommit" | "cancel" => {
             send_response(&tx, WSResponse::result(&req.id, json!({"ok": true}))).await;
         }
         "scan" => handle_scan(&req, &deps, &tx).await,
@@ -907,13 +911,16 @@ async fn handle_commit_push(req: &WSRequest, deps: &ServerDeps, tx: &mpsc::Sende
 async fn handle_fetch_all(req: &WSRequest, deps: &ServerDeps, tx: &mpsc::Sender<String>) {
     scanner::reset_cancel();
 
-    let all_repos = deps.cache.get_all_repos().await;
-    let local_repos: Vec<GitRepo> = all_repos
-        .into_iter()
+    // Fetch only repositories from the local on-disk cache. Remote peer repositories
+    // can be present in get_all_repos(), but their paths are not local to this server.
+    let mut cached_repos = deps.cache.load().await;
+    let local_repos: Vec<GitRepo> = cached_repos
+        .iter()
         .filter(|r| {
             !(r.settings.as_ref().map_or(false, |s| s.hidden)
                 || r.settings.as_ref().map_or(false, |s| s.skip_pull_check))
         })
+        .cloned()
         .collect();
 
     let total = local_repos.len();
@@ -924,6 +931,7 @@ async fn handle_fetch_all(req: &WSRequest, deps: &ServerDeps, tx: &mpsc::Sender<
                 &req.id,
                 json!(FetchProgress {
                     phase: "done".to_string(),
+                    repo: None,
                     repo_path: None,
                     repo_name: None,
                     current: 0,
@@ -946,6 +954,7 @@ async fn handle_fetch_all(req: &WSRequest, deps: &ServerDeps, tx: &mpsc::Sender<
             &req.id,
             json!(FetchProgress {
                 phase: "fetching".to_string(),
+                repo: None,
                 repo_path: None,
                 repo_name: None,
                 current: 0,
@@ -959,88 +968,90 @@ async fn handle_fetch_all(req: &WSRequest, deps: &ServerDeps, tx: &mpsc::Sender<
     )
     .await;
 
-    for (i, repo) in local_repos.iter().enumerate() {
-        if scanner::SCAN_CANCELED.load(std::sync::atomic::Ordering::SeqCst) {
-            break;
+    let semaphore = Arc::new(tokio::sync::Semaphore::new(4));
+    let mut tasks = tokio::task::JoinSet::new();
+    for repo in local_repos {
+        let git = Arc::clone(&deps.git);
+        let semaphore = Arc::clone(&semaphore);
+        tasks.spawn(async move {
+            let _permit = semaphore.acquire_owned().await.expect("semaphore is open");
+            let _ = git
+                .run_with_lock("fetch origin", &repo.path, Duration::from_secs(30))
+                .await;
+
+            let status = match git.get_status_with_lock(&repo.path).await {
+                Ok(status) => status,
+                Err(error) => return (repo, Some(error.to_string())),
+            };
+            let mut updated = repo_with_status(repo, status);
+            let should_auto_pull = updated
+                .settings
+                .as_ref()
+                .map_or(false, |settings| settings.auto_pull_if_clean)
+                && updated.behind > 0
+                && updated.ahead == 0
+                && !updated.has_changes;
+
+            if should_auto_pull
+                && git
+                    .run_with_lock("pull --ff-only", &updated.path, Duration::from_secs(30))
+                    .await
+                    .is_ok()
+            {
+                if let Ok(status) = git.get_status_with_lock(&updated.path).await {
+                    updated = repo_with_status(updated, status);
+                }
+            }
+
+            (updated, None)
+        });
+    }
+
+    let mut completed = 0;
+    let mut changed = false;
+    let mut cancel_poll = tokio::time::interval(Duration::from_millis(50));
+    while !tasks.is_empty() {
+        tokio::select! {
+            result = tasks.join_next() => {
+                let Some(Ok((repo, error))) = result else { continue };
+                completed += 1;
+                if error.is_none() {
+                    if let Some(cached) = cached_repos.iter_mut().find(|cached| cached.path == repo.path) {
+                        *cached = repo.clone();
+                        changed = true;
+                    }
+                }
+                send_response(
+                    tx,
+                    WSResponse::progress(
+                        &req.id,
+                        json!(FetchProgress {
+                            phase: "repo".to_string(),
+                            repo: error.is_none().then_some(repo.clone()),
+                            repo_path: Some(repo.path.clone()),
+                            repo_name: Some(repo.name.clone()),
+                            current: completed,
+                            total,
+                            ahead: error.is_none().then_some(repo.ahead),
+                            behind: error.is_none().then_some(repo.behind),
+                            branch: repo.branch.clone(),
+                            error,
+                        }),
+                    ),
+                )
+                .await;
+            }
+            _ = cancel_poll.tick() => {
+                if scanner::SCAN_CANCELED.load(std::sync::atomic::Ordering::SeqCst) {
+                    tasks.abort_all();
+                }
+            }
         }
+    }
 
-        send_response(
-            tx,
-            WSResponse::progress(
-                &req.id,
-                json!(FetchProgress {
-                    phase: "repo".to_string(),
-                    repo_path: Some(repo.path.clone()),
-                    repo_name: Some(repo.name.clone()),
-                    current: i,
-                    total,
-                    ahead: None,
-                    behind: None,
-                    branch: None,
-                    error: None,
-                }),
-            ),
-        )
-        .await;
-
-        let _ = deps
-            .git
-            .run_with_lock("fetch origin", &repo.path, Duration::from_secs(30))
-            .await;
-
-        let status = deps.git.get_status_with_lock(&repo.path).await.ok();
-        let should_auto_pull = repo
-            .settings
-            .as_ref()
-            .map_or(false, |s| s.auto_pull_if_clean)
-            && status.as_ref().map_or(false, |s| {
-                s.behind > 0
-                    && s.ahead == 0
-                    && !s.has_changes
-                    && s.staged == 0
-                    && s.unstaged == 0
-                    && s.untracked == 0
-            });
-
-        let status = if should_auto_pull
-            && deps
-                .git
-                .run_with_lock("pull --ff-only", &repo.path, Duration::from_secs(30))
-                .await
-                .is_ok()
-        {
-            deps.git.get_status_with_lock(&repo.path).await.ok()
-        } else {
-            status
-        };
-        let (a, b) = if let Some(ref s) = status {
-            (Some(s.ahead), Some(s.behind))
-        } else {
-            (None, None)
-        };
-
-        if status.is_some() {
-            update_repo_in_cache(deps, &repo.path).await;
-        }
-
-        send_response(
-            tx,
-            WSResponse::progress(
-                &req.id,
-                json!(FetchProgress {
-                    phase: "repo".to_string(),
-                    repo_path: Some(repo.path.clone()),
-                    repo_name: Some(repo.name.clone()),
-                    current: i + 1,
-                    total,
-                    ahead: a,
-                    behind: b,
-                    branch: repo.branch.clone(),
-                    error: None,
-                }),
-            ),
-        )
-        .await;
+    if changed {
+        deps.cache.save(&cached_repos).await;
+        deps.peers.notify_repos_updated().await;
     }
 
     send_response(
@@ -1049,9 +1060,10 @@ async fn handle_fetch_all(req: &WSRequest, deps: &ServerDeps, tx: &mpsc::Sender<
             &req.id,
             json!(FetchProgress {
                 phase: "done".to_string(),
+                repo: None,
                 repo_path: None,
                 repo_name: None,
-                current: total,
+                current: completed,
                 total,
                 ahead: None,
                 behind: None,
@@ -1064,6 +1076,25 @@ async fn handle_fetch_all(req: &WSRequest, deps: &ServerDeps, tx: &mpsc::Sender<
     scanner::release_memory();
     scanner::log_rss("fetch_all end");
     send_response(tx, WSResponse::done(&req.id)).await;
+}
+
+fn repo_with_status(mut repo: GitRepo, status: GitStatusResult) -> GitRepo {
+    repo.branch = Some(status.branch);
+    repo.has_changes = status.has_changes;
+    repo.staged = status.staged;
+    repo.staged_files = status.staged_files;
+    repo.unstaged = status.unstaged;
+    repo.unstaged_files = status.unstaged_files;
+    repo.untracked = status.untracked;
+    repo.untracked_files = status.untracked_files;
+    repo.ahead = status.ahead;
+    repo.behind = status.behind;
+    repo.remote = status.remote;
+    repo.last_commit_time = Some(status.last_commit_time.map(|time| time * 1000).unwrap_or(0));
+    repo.week_commits = status.week_commits;
+    repo.last_scan_time = Some(now_millis());
+    repo.error = None;
+    repo
 }
 
 async fn handle_get_diff(req: &WSRequest, deps: &ServerDeps, tx: &mpsc::Sender<String>) {

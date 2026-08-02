@@ -159,6 +159,8 @@ pub struct CommitProgress {
 pub struct FetchProgress {
     pub phase: String,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub repo: Option<GitRepo>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub repo_path: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub repo_name: Option<String>,

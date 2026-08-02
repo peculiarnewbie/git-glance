@@ -256,7 +256,6 @@ export default function App() {
   }
 
   onMount(async () => {
-    getWorkerPool();
     const session = await checkSession();
     if (session.state === "unauthenticated") {
       setAuthState("unauthenticated");
@@ -390,17 +389,13 @@ export default function App() {
         if (data.repoName) {
           setFetchCurrentRepo(data.repoName);
         }
-        if (data.repoPath) {
-          api.getRepos().then(d => {
-            const updated = d.repos.map(repoDataToInfo).find(r => r.path === data.repoPath);
-            if (updated) {
-              setRepos(prev => {
-                const next = prev.slice();
-                const idx = next.findIndex(r => r.path === data.repoPath);
-                if (idx >= 0) next[idx] = updated;
-                return next;
-              });
-            }
+        if (data.repo) {
+          const updated = repoDataToInfo(data.repo);
+          setRepos(prev => {
+            const next = prev.slice();
+            const idx = next.findIndex(r => r.path === updated.path);
+            if (idx >= 0) next[idx] = updated;
+            return next;
           });
         }
       } else if (data.phase === "done") {
@@ -1471,17 +1466,26 @@ export default function App() {
           </div>
         </Show>
 
-        <Show when={scanning() && progress().total > 0}>
+        <Show when={scanning()}>
           <div class="mb-4">
             <div class="flex items-center justify-between text-[11px] mb-1.5">
-              <span class="text-zinc-500">Scanning repositories...</span>
-              <span class="text-zinc-600 tabular-nums">{progress().current}/{progress().total}</span>
+              <span class="text-zinc-500">
+                {progress().total > 0 ? "Scanning repositories..." : "Discovering repositories..."}
+              </span>
+              <Show when={progress().total > 0}>
+                <span class="text-zinc-600 tabular-nums">{progress().current}/{progress().total}</span>
+              </Show>
             </div>
             <div class="h-1 bg-zinc-800 rounded-full overflow-hidden">
-              <div
-                class="h-full bg-amber-500/60 rounded-full transition-all duration-300 ease-out"
-                style={{ width: ((progress().current / progress().total) * 100) + "%" }}
-              />
+              <Show
+                when={progress().total > 0}
+                fallback={<div class="h-full w-1/3 bg-amber-500/60 rounded-full animate-pulse" />}
+              >
+                <div
+                  class="h-full bg-amber-500/60 rounded-full transition-all duration-300 ease-out"
+                  style={{ width: ((progress().current / progress().total) * 100) + "%" }}
+                />
+              </Show>
             </div>
           </div>
         </Show>

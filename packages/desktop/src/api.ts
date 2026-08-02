@@ -85,8 +85,13 @@ function connect(): Promise<void> {
         const { id, type, data, error } = msgData
         const recvExtra: Record<string, unknown> = { id, type }
         if (error !== undefined) recvExtra.error = error
-        if (data !== undefined && type !== "result") recvExtra.data = data
-        logInfo("[ws] recv", recvExtra)
+        if (data !== undefined && type !== "result") {
+          const { phase, current, total } = data
+          if (phase !== undefined) recvExtra.phase = phase
+          if (current !== undefined) recvExtra.current = current
+          if (total !== undefined) recvExtra.total = total
+        }
+        if (import.meta.env.DEV) logInfo("[ws] recv", recvExtra)
         if (type === "result") {
           const p = pending.get(id)
           if (p) { p.resolve(data); pending.delete(id) }
@@ -123,7 +128,12 @@ async function send<T>(action: string, params?: Record<string, any>): Promise<T>
   })
 }
 
-function subscribe(action: string, params: Record<string, any> | undefined, onEvent: (data: any) => void): AbortController {
+function subscribe(
+  action: string,
+  params: Record<string, any> | undefined,
+  onEvent: (data: any) => void,
+  cancelAction = "cancel",
+): AbortController {
   const controller = new AbortController()
   connect().then(() => {
     if (controller.signal.aborted) return
@@ -133,7 +143,7 @@ function subscribe(action: string, params: Record<string, any> | undefined, onEv
     ws!.send(JSON.stringify({ id, action, params }))
     controller.signal.addEventListener("abort", () => {
       subscriptions.delete(id)
-      send("cancel", { targetRequestId: id }).catch((e) => logError("[ws] cancel failed", { action, targetRequestId: id, error: String(e) }))
+      send(cancelAction, { targetRequestId: id }).catch((e) => logError("[ws] cancel failed", { action, cancelAction, targetRequestId: id, error: String(e) }))
     })
   })
   return controller
@@ -215,7 +225,7 @@ export interface CommitEvent {
 export interface FetchEvent {
   phase: string; repoPath?: string; repoName?: string
   current: number; total: number; ahead?: number; behind?: number
-  branch?: string; error?: string
+  branch?: string; error?: string; repo?: RepoData
 }
 
 export const api = {
@@ -235,9 +245,9 @@ export const api = {
   updateRepoSettings: (repo: RepoPath, settings: { skipUntracked?: boolean; skipPullCheck?: boolean; autoPullIfClean?: boolean; hidden?: boolean; pinned?: boolean }): Promise<void> =>
     send("updateRepoSettings", { repo, ...settings }),
 
-  cancelScan: (): Promise<void> => send("cancel").then(() => {}),
-  cancelCommit: (): Promise<void> => send("cancel").then(() => {}),
-  cancelFetch: (): Promise<void> => send("cancel").then(() => {}),
+  cancelScan: (): Promise<void> => send("cancelScan").then(() => {}),
+  cancelCommit: (): Promise<void> => send("cancelCommit").then(() => {}),
+  cancelFetch: (): Promise<void> => send("cancelFetch").then(() => {}),
 
   subscribeScan: (rootDir: RepoPath, onEvent: (ev: ProgressEvent) => void, onError?: (error: Error) => void): AbortController =>
     subscribe("scan", { rootDir }, (data) => {
@@ -245,14 +255,14 @@ export const api = {
       if (data.type === "ack") return
       if (data.type === "done") return
       onEvent(data)
-    }),
+    }, "cancelScan"),
 
   subscribeCommitPush: (repo: string, onEvent: (ev: CommitEvent) => void): AbortController =>
     subscribe("commitPush", { repo }, (data) => {
       if (data.type === "ack") return
       if (data.type === "done") return
       onEvent(data)
-    }),
+    }, "cancelCommit"),
 
   subscribeScanOnly: (rootDir: RepoPath, onEvent: (ev: ProgressEvent) => void, onError?: (error: Error) => void): AbortController =>
     subscribe("scanOnly", { rootDir }, (data) => {
@@ -260,7 +270,7 @@ export const api = {
       if (data.type === "ack") return
       if (data.type === "done") return
       onEvent(data)
-    }),
+    }, "cancelScan"),
 
   rescanRepo: (repo: RepoPath): Promise<{ ok: boolean; repo?: RepoData; error?: string }> =>
     send("rescanRepo", { repo }),
@@ -285,7 +295,7 @@ export const api = {
       if (data.type === "ack") return
       if (data.type === "done") return
       onEvent(data)
-    }),
+    }, "cancelFetch"),
 
   onMachineStatus: (fn: (machines: { name: string; online: boolean; lastSeen: number | null }[]) => void) => {
     machineHandlers.add(fn)

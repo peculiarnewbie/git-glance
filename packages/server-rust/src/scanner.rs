@@ -5,6 +5,8 @@ use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::sync::mpsc;
 
+use ignore::WalkBuilder;
+
 #[cfg(target_os = "linux")]
 extern "C" {
     fn malloc_trim(_pad: usize) -> i32;
@@ -59,8 +61,58 @@ fn find_git_repos(root_dir: &str, excluded_dirs: &[String]) -> Vec<String> {
             Some(normalize_path(Path::new(t)))
         })
         .collect();
-    walk_dir(root, &mut repos, &excludes);
+
+    let filter_excludes = excludes.clone();
+    let mut builder = WalkBuilder::new(root);
+    builder
+        // Match the scanner's existing treatment of dot-directories and symlinks.
+        .hidden(true)
+        .follow_links(true)
+        // Use Git's ignore semantics without also introducing ripgrep-style `.ignore` files.
+        .ignore(false)
+        .git_ignore(true)
+        .git_global(true)
+        .git_exclude(true)
+        .require_git(true)
+        .filter_entry(move |entry| {
+            if entry.depth() == 0 {
+                return true;
+            }
+            if SCAN_CANCELED.load(Ordering::SeqCst) {
+                return false;
+            }
+            if entry.file_name().to_string_lossy() == "node_modules" {
+                return false;
+            }
+            !filter_excludes
+                .iter()
+                .any(|excluded| is_under(entry.path(), excluded))
+        });
+
+    for entry in builder.build().filter_map(Result::ok) {
+        if SCAN_CANCELED.load(Ordering::SeqCst) {
+            break;
+        }
+        if !entry
+            .file_type()
+            .is_some_and(|file_type| file_type.is_dir())
+        {
+            continue;
+        }
+
+        let git_marker = entry.path().join(".git");
+        // Worktrees and some submodules use a `.git` file instead of a directory.
+        if git_marker.is_dir() || git_marker.is_file() {
+            repos.push(entry.path().to_string_lossy().to_string());
+        }
+    }
     repos
+}
+
+async fn discover_git_repos(root_dir: String, excluded_dirs: Vec<String>) -> Vec<String> {
+    tokio::task::spawn_blocking(move || find_git_repos(&root_dir, &excluded_dirs))
+        .await
+        .unwrap_or_default()
 }
 
 /// Normalize a path for comparison: strip the Windows verbatim (`\\?\`)
@@ -85,46 +137,6 @@ fn normalize_path(p: &Path) -> String {
 fn is_under(path: &Path, prefix_norm: &str) -> bool {
     let np = normalize_path(path);
     np == prefix_norm || np.starts_with(&format!("{}/", prefix_norm))
-}
-
-fn walk_dir(dir: &Path, repos: &mut Vec<String>, excludes: &[String]) {
-    let entries = match std::fs::read_dir(dir) {
-        Ok(e) => e,
-        Err(_) => return,
-    };
-
-    for entry in entries.flatten() {
-        let path = entry.path();
-        let name = entry.file_name().to_string_lossy().to_string();
-
-        if !path.is_dir() {
-            continue;
-        }
-
-        // Skip anything at or under an excluded folder.
-        if excludes.iter().any(|ex| is_under(&path, ex)) {
-            continue;
-        }
-
-        if name == ".git" {
-            if let Some(parent) = path.parent() {
-                repos.push(parent.to_string_lossy().to_string());
-            }
-            continue;
-        }
-
-        // Skip dotfiles (except .git which is handled above)
-        if name.starts_with('.') {
-            continue;
-        }
-
-        // Skip node_modules
-        if name == "node_modules" {
-            continue;
-        }
-
-        walk_dir(&path, repos, excludes);
-    }
 }
 
 fn now_millis() -> i64 {
@@ -218,8 +230,31 @@ pub async fn scan_all(
 ) {
     log_rss("scan_all start");
     release_memory();
-    let repo_paths = find_git_repos(&root_dir, &excluded_dirs);
+    let _ = progress_tx
+        .send(ScanProgress {
+            phase: "discovering".to_string(),
+            total: 0,
+            current: 0,
+            repo: None,
+        })
+        .await;
+
+    let repo_paths = discover_git_repos(root_dir, excluded_dirs).await;
     let total = repo_paths.len();
+
+    if SCAN_CANCELED.load(Ordering::SeqCst) {
+        git.cleanup_locks().await;
+        release_memory();
+        let _ = progress_tx
+            .send(ScanProgress {
+                phase: "done".to_string(),
+                total: 0,
+                current: 0,
+                repo: None,
+            })
+            .await;
+        return;
+    }
 
     let _ = progress_tx
         .send(ScanProgress {
@@ -243,7 +278,7 @@ pub async fn scan_all(
 
     // Scan concurrently (8 at a time)
     let sem = Arc::new(tokio::sync::Semaphore::new(8));
-    let mut handles = Vec::new();
+    let mut tasks = tokio::task::JoinSet::new();
     let mut results: Vec<Option<GitRepo>> = vec![None; total];
     let mut fetchable_indices = Vec::new();
 
@@ -254,7 +289,7 @@ pub async fn scan_all(
         let sem = sem.clone();
         let settings_map = Arc::clone(&settings_map);
 
-        handles.push(tokio::spawn(async move {
+        tasks.spawn(async move {
             let _permit = sem.acquire().await.unwrap();
             let mut repo = tokio::time::timeout(
                 Duration::from_secs(30),
@@ -288,29 +323,55 @@ pub async fn scan_all(
             });
             merge_settings(&mut repo, &settings_map);
             (i, repo)
-        }));
+        });
     }
 
-    for handle in handles {
-        if let Ok((i, repo)) = handle.await {
-            if !SCAN_CANCELED.load(Ordering::SeqCst) {
-                let _ = progress_tx
-                    .send(ScanProgress {
-                        phase: "scanning".to_string(),
-                        total,
-                        current: i + 1,
-                        repo: Some(repo.clone()),
-                    })
-                    .await;
+    let mut completed = 0;
+    let mut cancel_poll = tokio::time::interval(Duration::from_millis(50));
+    while !tasks.is_empty() {
+        tokio::select! {
+            result = tasks.join_next() => {
+                if let Some(Ok((i, repo))) = result {
+                    completed += 1;
+                    if !SCAN_CANCELED.load(Ordering::SeqCst) {
+                        let _ = progress_tx
+                            .send(ScanProgress {
+                                phase: "scanning".to_string(),
+                                total,
+                                current: completed,
+                                repo: Some(repo.clone()),
+                            })
+                            .await;
+                    }
+                    if repo.settings.is_none()
+                        || (!repo.settings.as_ref().unwrap().skip_pull_check
+                            && !repo.settings.as_ref().unwrap().hidden)
+                    {
+                        fetchable_indices.push(i);
+                    }
+                    results[i] = Some(repo);
+                }
             }
-            if repo.settings.is_none()
-                || (!repo.settings.as_ref().unwrap().skip_pull_check
-                    && !repo.settings.as_ref().unwrap().hidden)
-            {
-                fetchable_indices.push(i);
+            _ = cancel_poll.tick() => {
+                if SCAN_CANCELED.load(Ordering::SeqCst) {
+                    tasks.abort_all();
+                }
             }
-            results[i] = Some(repo);
         }
+    }
+
+    if SCAN_CANCELED.load(Ordering::SeqCst) {
+        git.cleanup_locks().await;
+        release_memory();
+        let _ = progress_tx
+            .send(ScanProgress {
+                phase: "done".to_string(),
+                total: 0,
+                current: 0,
+                repo: None,
+            })
+            .await;
+        return;
     }
 
     let scanned_results: Vec<GitRepo> = results.into_iter().flatten().collect();
@@ -318,6 +379,20 @@ pub async fn scan_all(
 
     if !SCAN_CANCELED.load(Ordering::SeqCst) {
         cache.save(&scanned_results).await;
+    }
+
+    if SCAN_CANCELED.load(Ordering::SeqCst) {
+        git.cleanup_locks().await;
+        release_memory();
+        let _ = progress_tx
+            .send(ScanProgress {
+                phase: "done".to_string(),
+                total: 0,
+                current: 0,
+                repo: None,
+            })
+            .await;
+        return;
     }
 
     // Fetch concurrently (4 at a time)
@@ -464,8 +539,31 @@ pub async fn scan_only(
 ) {
     log_rss("scan_only start");
     release_memory();
-    let repo_paths = find_git_repos(&root_dir, &excluded_dirs);
+    let _ = progress_tx
+        .send(ScanProgress {
+            phase: "discovering".to_string(),
+            total: 0,
+            current: 0,
+            repo: None,
+        })
+        .await;
+
+    let repo_paths = discover_git_repos(root_dir, excluded_dirs).await;
     let total = repo_paths.len();
+
+    if SCAN_CANCELED.load(Ordering::SeqCst) {
+        git.cleanup_locks().await;
+        release_memory();
+        let _ = progress_tx
+            .send(ScanProgress {
+                phase: "done".to_string(),
+                total: 0,
+                current: 0,
+                repo: None,
+            })
+            .await;
+        return;
+    }
 
     let _ = progress_tx
         .send(ScanProgress {
@@ -486,7 +584,7 @@ pub async fn scan_only(
     drop(existing);
 
     let sem = Arc::new(tokio::sync::Semaphore::new(8));
-    let mut handles = Vec::new();
+    let mut tasks = tokio::task::JoinSet::new();
     let mut results: Vec<Option<GitRepo>> = vec![None; total];
 
     for (i, path) in repo_paths.iter().enumerate() {
@@ -496,7 +594,7 @@ pub async fn scan_only(
         let sem = sem.clone();
         let settings_map = Arc::clone(&settings_map);
 
-        handles.push(tokio::spawn(async move {
+        tasks.spawn(async move {
             let _permit = sem.acquire().await.unwrap();
             let mut repo = tokio::time::timeout(
                 Duration::from_secs(30),
@@ -530,23 +628,49 @@ pub async fn scan_only(
             });
             merge_settings(&mut repo, &settings_map);
             (i, repo)
-        }));
+        });
     }
 
-    for handle in handles {
-        if let Ok((i, repo)) = handle.await {
-            if !SCAN_CANCELED.load(Ordering::SeqCst) {
-                let _ = progress_tx
-                    .send(ScanProgress {
-                        phase: "scanning".to_string(),
-                        total,
-                        current: i + 1,
-                        repo: Some(repo.clone()),
-                    })
-                    .await;
+    let mut completed = 0;
+    let mut cancel_poll = tokio::time::interval(Duration::from_millis(50));
+    while !tasks.is_empty() {
+        tokio::select! {
+            result = tasks.join_next() => {
+                if let Some(Ok((i, repo))) = result {
+                    completed += 1;
+                    if !SCAN_CANCELED.load(Ordering::SeqCst) {
+                        let _ = progress_tx
+                            .send(ScanProgress {
+                                phase: "scanning".to_string(),
+                                total,
+                                current: completed,
+                                repo: Some(repo.clone()),
+                            })
+                            .await;
+                    }
+                    results[i] = Some(repo);
+                }
             }
-            results[i] = Some(repo);
+            _ = cancel_poll.tick() => {
+                if SCAN_CANCELED.load(Ordering::SeqCst) {
+                    tasks.abort_all();
+                }
+            }
         }
+    }
+
+    if SCAN_CANCELED.load(Ordering::SeqCst) {
+        git.cleanup_locks().await;
+        release_memory();
+        let _ = progress_tx
+            .send(ScanProgress {
+                phase: "done".to_string(),
+                total: 0,
+                current: 0,
+                repo: None,
+            })
+            .await;
+        return;
     }
 
     let scanned_results: Vec<GitRepo> = results.into_iter().flatten().collect();
@@ -568,4 +692,89 @@ pub async fn scan_only(
             repo: None,
         })
         .await;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{find_git_repos, normalize_path, reset_cancel};
+    use std::fs;
+    use std::path::{Path, PathBuf};
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    struct TestDir(PathBuf);
+
+    impl TestDir {
+        fn new() -> Self {
+            let unique = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos();
+            let path = std::env::temp_dir().join(format!(
+                "git-glance-scanner-{}-{unique}",
+                std::process::id()
+            ));
+            fs::create_dir_all(&path).unwrap();
+            Self(path)
+        }
+
+        fn path(&self) -> &Path {
+            &self.0
+        }
+    }
+
+    impl Drop for TestDir {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
+
+    fn create_repo(path: &Path) {
+        fs::create_dir_all(path.join(".git")).unwrap();
+    }
+
+    #[test]
+    fn skips_gitignored_nested_repositories() {
+        reset_cancel();
+        let root = TestDir::new();
+        let parent = root.path().join("parent");
+        create_repo(&parent);
+        fs::write(parent.join(".gitignore"), "ignored/\n").unwrap();
+        create_repo(&parent.join("ignored/nested"));
+        create_repo(&parent.join("visible/nested"));
+
+        let found: Vec<String> = find_git_repos(&root.path().to_string_lossy(), &[])
+            .iter()
+            .map(|path| normalize_path(Path::new(path)))
+            .collect();
+
+        assert!(found.contains(&normalize_path(&parent)));
+        assert!(found.contains(&normalize_path(&parent.join("visible/nested"))));
+        assert!(!found.contains(&normalize_path(&parent.join("ignored/nested"))));
+    }
+
+    #[test]
+    fn recognizes_git_files_and_explicit_exclusions() {
+        reset_cancel();
+        let root = TestDir::new();
+        let worktree = root.path().join("worktree");
+        fs::create_dir_all(&worktree).unwrap();
+        fs::write(
+            worktree.join(".git"),
+            "gitdir: ../main/.git/worktrees/test\n",
+        )
+        .unwrap();
+        let excluded = root.path().join("excluded");
+        create_repo(&excluded);
+
+        let found: Vec<String> = find_git_repos(
+            &root.path().to_string_lossy(),
+            &[excluded.to_string_lossy().to_string()],
+        )
+        .iter()
+        .map(|path| normalize_path(Path::new(path)))
+        .collect();
+
+        assert!(found.contains(&normalize_path(&worktree)));
+        assert!(!found.contains(&normalize_path(&excluded)));
+    }
 }
